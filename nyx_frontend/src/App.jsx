@@ -89,6 +89,15 @@ export default function App() {
     return () => window.removeEventListener('resize', handler)
   }, [])
 
+  // Deep-link support — e.g. tray app opens ?page=settings directly
+  useEffect(() => {
+    const page = new URLSearchParams(window.location.search).get('page')
+    if (page) {
+      setActivePage(page)
+      setIdleScreen(false)
+    }
+  }, [])
+
   // Close sidebar when switching to desktop
   useEffect(() => {
     if (!isMobile) setSidebarOpen(false)
