@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Ollama ────────────────────────────────────────────────
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# 127.0.0.1, not localhost: resolving "localhost" can cost ~2s on machines
+# where IPv6 (::1) is tried first and times out before falling back to IPv4.
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 # ── OpenClaw gateway ──────────────────────────────────────
 OPENCLAW_HOST:  str = os.getenv("OPENCLAW_HOST",  "127.0.0.1")
