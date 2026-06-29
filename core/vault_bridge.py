@@ -1,23 +1,26 @@
 """
-core/vault_bridge.py — Obsidian Vault Integration
+core/vault_bridge.py — Vault / Memory Storage Bridge
 
-Two-way sync between NYX and the Obsidian vault:
-  Read  — vault Memory/*.md files injected as AI context each session
-  Write — conversation exchanges appended to vault Logs/YYYY-MM-DD.md
-  Write — explicit memory triggers saved to vault Memory/auto.md
+Reads and writes NYX's memory notes as plain markdown files. WHERE those
+files live is decided by core/storage_provider.py (NYX's own NYX_VAULT/
+folder by default, or a connected external Obsidian vault) — this module
+always asks for the current path rather than caching it, so switching
+providers in Settings takes effect immediately without a restart.
+
+Two-way sync:
+  Read  — Memory/*.md files injected as AI context each session
+  Write — conversation exchanges appended to Logs/YYYY-MM-DD.md
+  Write — explicit memory triggers saved to Memory/auto.md
 """
 
 import re
 from datetime import datetime
 from pathlib import Path
+
+from core import storage_provider
 from utils.logger import get_logger
 
 log = get_logger(__name__)
-
-_BASE       = Path(__file__).parent.parent
-VAULT_PATH  = _BASE / "NYX_VAULT"
-MEMORY_DIR  = VAULT_PATH / "Memory"
-LOGS_DIR    = VAULT_PATH / "Logs"
 
 # Phrases that trigger explicit memory saving
 _REMEMBER_PATTERNS = [
@@ -29,9 +32,21 @@ _REMEMBER_PATTERNS = [
 ]
 
 
+def get_vault_path() -> Path:
+    return storage_provider.get_active_vault_path()
+
+
+def get_memory_dir() -> Path:
+    return get_vault_path() / "Memory"
+
+
+def get_logs_dir() -> Path:
+    return get_vault_path() / "Logs"
+
+
 def _ensure_dirs() -> None:
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    get_memory_dir().mkdir(parents=True, exist_ok=True)
+    get_logs_dir().mkdir(parents=True, exist_ok=True)
 
 
 def read_context() -> str:
@@ -39,11 +54,12 @@ def read_context() -> str:
     Read all .md files from Memory/ and return a formatted context block.
     Returns empty string if the vault has no memory notes yet.
     """
-    if not MEMORY_DIR.exists():
+    memory_dir = get_memory_dir()
+    if not memory_dir.exists():
         return ""
 
     blocks = []
-    for md_file in sorted(MEMORY_DIR.glob("*.md")):
+    for md_file in sorted(memory_dir.glob("*.md")):
         try:
             content = md_file.read_text(encoding="utf-8").strip()
             if content:
@@ -61,7 +77,7 @@ def log_exchange(timestamp: str, user: str, nyx: str, model: str) -> None:
     """Append a conversation exchange to today's vault log note."""
     _ensure_dirs()
     today    = datetime.now().strftime("%Y-%m-%d")
-    log_file = LOGS_DIR / f"{today}.md"
+    log_file = get_logs_dir() / f"{today}.md"
 
     if not log_file.exists():
         log_file.write_text(f"# NYX Log — {today}\n\n", encoding="utf-8")
@@ -85,7 +101,7 @@ def extract_and_save_memory(user_input: str) -> None:
     to Memory/auto.md. Triggers: 'remember that...', 'note that...', etc.
     """
     _ensure_dirs()
-    auto_file = MEMORY_DIR / "auto.md"
+    auto_file = get_memory_dir() / "auto.md"
 
     for pattern in _REMEMBER_PATTERNS:
         match = pattern.search(user_input)

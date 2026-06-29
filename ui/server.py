@@ -32,6 +32,7 @@ import config
 from core.agent import NyxAgent
 from core.constellation_manager import constellation
 from core import model_manager
+from core import storage_provider
 from brain import openclaw_provider
 from utils.logger import get_logger
 
@@ -397,12 +398,13 @@ async def add_memory(req: MemoryNode):
         importance=req.importance,
         tags=req.tags,
     )
-    # Mirror to Obsidian vault
+    # Mirror to the active storage provider's vault
     try:
-        from core.vault_bridge import MEMORY_DIR
+        from core.vault_bridge import get_memory_dir
         from datetime import datetime
-        mf = MEMORY_DIR / "manual.md"
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        memory_dir = get_memory_dir()
+        mf = memory_dir / "manual.md"
+        memory_dir.mkdir(parents=True, exist_ok=True)
         if not mf.exists():
             mf.write_text("# Manually Added Memories\n\n", encoding="utf-8")
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -559,7 +561,8 @@ async def net_status():
         _async_ping(config.OPENCLAW_HOST, config.OPENCLAW_PORT, timeout=2.0),
     )
 
-    vault_path = ROOT_DIR / "NYX_VAULT"
+    from core.vault_bridge import get_vault_path
+    vault_path = get_vault_path()
     vault_ok   = vault_path.exists()
     vault_mds  = len(list(vault_path.rglob("*.md"))) if vault_ok else 0
 
@@ -751,6 +754,35 @@ async def models_delete(name: str):
     if not ok:
         raise HTTPException(status_code=400, detail=f"Failed to delete model '{name}'")
     return {"status": "deleted", "name": name}
+
+
+# ── Storage / Memory Provider ─────────────────────────────────────────────────
+
+class StorageProviderRequest(BaseModel):
+    provider: str
+    obsidian_path: str | None = None
+
+
+class StorageCheckPathRequest(BaseModel):
+    path: str
+
+
+@app.get("/api/providers/storage/status")
+async def storage_status():
+    return storage_provider.get_status()
+
+
+@app.post("/api/providers/storage/select")
+async def storage_select(req: StorageProviderRequest):
+    try:
+        return storage_provider.set_provider(req.provider, req.obsidian_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/providers/storage/check-path")
+async def storage_check_path(req: StorageCheckPathRequest):
+    return storage_provider.check_path(req.path)
 
 
 # ── SPA fallback ─────────────────────────────────────────────────────────────
