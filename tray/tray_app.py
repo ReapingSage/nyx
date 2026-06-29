@@ -15,6 +15,7 @@ import sys
 import os
 import socket
 import subprocess
+import threading
 import time
 import webbrowser
 
@@ -137,9 +138,13 @@ def _terminate_tree(pid: int):
             pass
 
 
+REFRESH_INTERVAL_SECS = 5
+
+
 class NyxTrayApp:
     def __init__(self):
         self.process: subprocess.Popen | None = None
+        self._stop_refresh = threading.Event()
         self.icon = pystray.Icon(
             "nyx",
             make_icon_image(),
@@ -156,7 +161,8 @@ class NyxTrayApp:
 
     def start_service(self, _icon=None, _item=None):
         if self.is_running():
-            return  # already running — whether we started it or not
+            self._refresh()  # already running (maybe started elsewhere) — just sync the title
+            return
 
         self.process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "ui.server:app", "--host", HOST, "--port", str(PORT)],
@@ -192,6 +198,13 @@ class NyxTrayApp:
     def _refresh(self):
         self.icon.title = f"NYX — {'Running' if self.is_running() else 'Stopped'}"
         self.icon.update_menu()
+
+    def _refresh_loop(self):
+        """Keeps the tray title/menu accurate even if NYX is started or
+        stopped some other way (a terminal, Docker, etc.) while this tray
+        app is just sitting there."""
+        while not self._stop_refresh.wait(REFRESH_INTERVAL_SECS):
+            self._refresh()
 
     # ── Browser actions ─────────────────────────────────────
 
@@ -237,10 +250,12 @@ class NyxTrayApp:
         # exiting the tray shouldn't kill a server you started yourself in a terminal.
         if self.process is not None and self.process.poll() is None:
             self.stop_service()
+        self._stop_refresh.set()
         self.icon.stop()
 
     def run(self):
         self.start_service()
+        threading.Thread(target=self._refresh_loop, daemon=True).start()
         self.icon.run()
 
 
