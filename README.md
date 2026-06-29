@@ -182,7 +182,8 @@ Restart the backend and frontend (or the tray app) after updating.
 1. Fork the repo and create a branch for your change
 2. Keep changes scoped — one feature or fix per pull request
 3. Don't commit secrets, API keys, or personal data — check `.gitignore` covers anything new you add that's machine- or person-specific
-4. Open a pull request against `main` with a clear description of what changed and why
+4. Before opening a pull request, walk through [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for anything your change touches
+5. Open a pull request against `main` with a clear description of what changed and why
 
 ## Project structure
 
