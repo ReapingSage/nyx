@@ -2,10 +2,12 @@
 core/permissions.py — Permission System
 Guards what Nyx is allowed to do.
 
-v1: Keyword-based soft warnings. Nothing is blocked yet.
-Future: Hard blocks, user confirmation prompts, per-action allowlists.
+Keyword-based detection. Whether a dangerous phrase actually blocks the
+request or just warns is controlled by the user's Privacy setting
+(core/app_settings.py: privacy.block_dangerous_actions).
 """
 
+from core import app_settings
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -50,21 +52,24 @@ DANGER_PHRASES = [
 
 def check(user_input: str) -> bool:
     """
-    Scan user input for dangerous intent and log a warning if found.
-    Does NOT block in v1 — that comes in a future phase.
-
-    Args:
-        user_input: Raw user message.
+    Scan user input for dangerous intent.
 
     Returns:
-        True if safe, False if potentially dangerous (currently just warns).
+        True if the request should proceed, False if it should be blocked.
+        Whether a flagged phrase actually blocks (vs. just warns) depends on
+        the user's Privacy setting (block_dangerous_actions).
     """
     lower = user_input.lower()
+    block_mode = app_settings.get_section("privacy").get("block_dangerous_actions", False)
+
     for phrase in DANGER_PHRASES:
         if phrase in lower:
             log.warning(f"Potentially dangerous input detected: '{phrase}' in message.")
+            if block_mode:
+                log.warning(f"Blocked — Privacy setting 'block_dangerous_actions' is enabled.")
+                return False
             print(f"\n  [⚠ permissions] Flagged phrase: '{phrase}' — proceeding with caution.")
-            return False
+            return True
     return True
 
 

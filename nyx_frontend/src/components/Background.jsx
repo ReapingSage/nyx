@@ -564,9 +564,16 @@ export default function Background() {
   const animRef    = useRef(null)
   const dataRef    = useRef(null)
   const bgStyleRef = useRef('deep-space')
+  const prefsRef   = useRef({ particlesEnabled: true, targetFPS: 60 })
 
-  const { bgStyle } = useTheme()
+  const { bgStyle, visualPrefs } = useTheme()
   useEffect(() => { bgStyleRef.current = bgStyle }, [bgStyle])
+  useEffect(() => {
+    prefsRef.current = {
+      particlesEnabled: visualPrefs.particlesEnabled,
+      targetFPS: visualPrefs.targetFPS,
+    }
+  }, [visualPrefs.particlesEnabled, visualPrefs.targetFPS])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -581,7 +588,9 @@ export default function Background() {
     window.addEventListener('resize', resize)
 
     let t = 0
-    const draw = () => {
+    let lastFrameTime = 0
+
+    const renderFrame = () => {
       const ctx = canvas.getContext('2d')
       const W = canvas.width, H = canvas.height
       t += 0.006
@@ -594,7 +603,6 @@ export default function Background() {
       // Light themes get a clean light background regardless of bg style
       if (isLightTheme()) {
         drawLightBackground(ctx, W, H, t, pRGB)
-        animRef.current = requestAnimationFrame(draw)
         return
       }
 
@@ -608,10 +616,26 @@ export default function Background() {
         case 'holographic-fog':   drawHolographicFog(ctx, W, H, t, data, pRGB);   break
         default:                  drawDeepSpace(ctx, W, H, t, data, pRGB);        break
       }
+    }
+
+    const draw = (now) => {
+      // Particle Systems toggle: render exactly one static frame, then stop
+      // the animation loop entirely (real CPU/GPU savings, not just a label).
+      if (!prefsRef.current.particlesEnabled) {
+        renderFrame()
+        return
+      }
+
+      // Target FPS: skip frames faster than the cap instead of running flat-out.
+      const minInterval = 1000 / Math.max(1, prefsRef.current.targetFPS)
+      if (now - lastFrameTime >= minInterval) {
+        lastFrameTime = now
+        renderFrame()
+      }
 
       animRef.current = requestAnimationFrame(draw)
     }
-    draw()
+    animRef.current = requestAnimationFrame(draw)
 
     return () => {
       cancelAnimationFrame(animRef.current)
@@ -620,9 +644,20 @@ export default function Background() {
   }, [])
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}
+      />
+      {/* Scan Line Overlay — real CRT effect, toggled via --scanline-opacity */}
+      <div
+        style={{
+          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 1,
+          opacity: 'var(--scanline-opacity, 0)',
+          background: 'repeating-linear-gradient(to bottom, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 3px)',
+          mixBlendMode: 'overlay',
+        }}
+      />
+    </>
   )
 }

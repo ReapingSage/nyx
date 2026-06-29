@@ -80,7 +80,15 @@ class NyxAgent:
         self._refresh_vault_context()
 
         # ── Permission check ──────────────────────────────
-        permissions.check(stripped)
+        if not permissions.check(stripped):
+            response = (
+                "[Nyx] This request was blocked by your Privacy setting "
+                "(\"Block dangerous actions\" is enabled in Settings → Privacy)."
+            )
+            self.history.append({"role": "user", "content": stripped})
+            self.history.append({"role": "assistant", "content": response})
+            memory_manager.save_exchange(user_input=stripped, response=response, model="permissions-block")
+            return response
 
         # ── Add user message to history ───────────────────
         self.history.append({"role": "user", "content": stripped})

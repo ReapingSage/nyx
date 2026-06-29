@@ -9,6 +9,7 @@ http://127.0.0.1:8000
 """
 
 import sys
+import os
 import json
 import uuid
 import random
@@ -18,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import psutil
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +34,10 @@ from core.agent import NyxAgent
 from core.constellation_manager import constellation
 from core import model_manager
 from core import storage_provider
+from core import app_settings
+from core import event_log
+from core import task_store
+from core import reminders_store
 from brain import openclaw_provider
 from utils.logger import get_logger
 
@@ -137,8 +142,12 @@ async def voice_respond(req: VoiceTranscriptRequest):
     except Exception as exc:
         log.warning(f"ACK TTS failed: {exc}")
 
-    # Route through AI agent
-    response_text = agent.handle(transcript)
+    # Route through AI agent — off the event loop, agent.handle() makes
+    # blocking network calls (Ollama) that would otherwise freeze every
+    # other request on this server until it finishes.
+    import asyncio
+    loop = asyncio.get_event_loop()
+    response_text = await loop.run_in_executor(None, agent.handle, transcript)
 
     # Generate response TTS
     audio_url = None
@@ -261,7 +270,12 @@ async def chat(req: ChatRequest):
     model, reason = model_router.route(req.message)
 
     try:
-        response_text = agent.handle(req.message)
+        # Off the event loop — agent.handle() makes blocking network calls
+        # (Ollama) that would otherwise freeze every other request on this
+        # server until the model finishes responding.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        response_text = await loop.run_in_executor(None, agent.handle, req.message)
     except Exception as e:
         log.error(f"agent.handle error: {e}", exc_info=True)
         response_text = f"[Nyx] Something went wrong processing that request. Error: {e}"
@@ -282,7 +296,9 @@ async def reset_memory():
 @app.get("/api/system")
 async def system_stats():
     try:
-        cpu = psutil.cpu_percent(interval=0.5)
+        # Non-blocking sample (interval=None) instead of a 0.5s blocking
+        # sleep that would freeze the single-threaded event loop on every poll.
+        cpu = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         net = psutil.net_io_counters()
@@ -483,19 +499,7 @@ async def openclaw_test():
 
 # ── Network Operations ─────────────────────────────────────────────────────────
 
-_net_events:  list[dict] = []
 _net_offline: bool = False
-
-
-def _net_log(category: str, title: str, detail: str = "") -> None:
-    _net_events.insert(0, {
-        "id":        str(uuid.uuid4()),
-        "timestamp": datetime.now().isoformat(),
-        "category":  category,
-        "title":     title,
-        "detail":    detail,
-    })
-    del _net_events[50:]
 
 
 async def _async_ping(host: str, port: int, timeout: float = 2.0) -> tuple[bool, int | None]:
@@ -541,7 +545,7 @@ async def _ollama_ping(timeout: float = 2.0) -> tuple[bool, int | None]:
 # Keep a tiny cache: (timestamp, result) — refreshed at most every 8 seconds
 _status_cache: tuple[float, dict] | None = None
 
-_net_log("system", "System Startup", "Nyx Core initialized. All systems online.")
+event_log.log_event("system", "System Startup", "Nyx Core initialized. All systems online.")
 
 
 @app.get("/api/network/status")
@@ -668,24 +672,25 @@ async def net_test_connections():
     _status_cache = None
 
     all_ok = all(v["ok"] for v in results.values())
-    _net_log(
+    event_log.log_event(
         "system", "Diagnostics Complete",
         f"Tested {len(results)} connections — {'all nominal' if all_ok else 'issues detected'}.",
+        status="ok" if all_ok else "warning",
     )
     return {"results": results, "all_ok": all_ok, "timestamp": datetime.now().isoformat()}
 
 
 @app.get("/api/network/logs")
 async def net_logs(limit: int = 30):
-    return {"events": _net_events[:limit]}
+    return {"events": event_log.get_events(limit=limit)}
 
 
 @app.post("/api/network/emergency-disconnect")
 async def net_emergency_disconnect():
     global _net_offline
     _net_offline = True
-    _net_log("security", "Emergency Disconnect",
-             "All external AI providers disabled. System isolated in offline mode.")
+    event_log.log_event("security", "Emergency Disconnect",
+             "All external AI providers disabled. System isolated in offline mode.", status="warning")
     return {"status": "disconnected", "offline_mode": True}
 
 
@@ -693,7 +698,7 @@ async def net_emergency_disconnect():
 async def net_reconnect():
     global _net_offline
     _net_offline = False
-    _net_log("system", "Systems Reconnected",
+    event_log.log_event("system", "Systems Reconnected",
              "External connections restored. Normal operations resumed.")
     return {"status": "reconnected", "offline_mode": False}
 
@@ -782,6 +787,258 @@ async def storage_select(req: StorageProviderRequest):
 @app.post("/api/providers/storage/check-path")
 async def storage_check_path(req: StorageCheckPathRequest):
     return storage_provider.check_path(req.path)
+
+
+# ── App Settings (Voice, Notifications, Privacy, Automation, Experimental) ───
+
+class SettingsUpdateRequest(BaseModel):
+    updates: dict
+
+
+@app.get("/api/settings/{section}")
+async def get_settings_section(section: str):
+    try:
+        return app_settings.get_section(section)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.put("/api/settings/{section}")
+async def update_settings_section(section: str, req: SettingsUpdateRequest):
+    try:
+        updated = app_settings.update_section(section, req.updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    event_log.log_event("settings", f"{section.capitalize()} settings updated", str(req.updates))
+    return updated
+
+
+@app.get("/api/permissions/info")
+async def permissions_info():
+    from core import permissions
+    return {
+        "safe_actions": sorted(permissions.SAFE_ACTIONS),
+        "dangerous_actions": sorted(permissions.DANGEROUS_ACTIONS),
+        "danger_phrases": permissions.DANGER_PHRASES,
+        "block_dangerous_actions": app_settings.get_section("privacy")["block_dangerous_actions"],
+    }
+
+
+class NotificationTestRequest(BaseModel):
+    title: str = "NYX"
+    message: str = "This is a test notification."
+
+
+@app.post("/api/notifications/test")
+async def notifications_test(req: NotificationTestRequest):
+    from tools.system.notifications import notify
+    result = notify(req.title, req.message, category="general")
+    return {"result": result}
+
+
+# ── Events ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/events")
+async def get_events(limit: int = 50, category: str | None = None):
+    return {"events": event_log.get_events(limit=limit, category=category)}
+
+
+# ── Tasks ────────────────────────────────────────────────────────────────────
+
+class TaskCreateRequest(BaseModel):
+    name: str
+    status: str = "PENDING"
+    type: str = "general"
+
+
+class TaskUpdateRequest(BaseModel):
+    name: str | None = None
+    status: str | None = None
+    type: str | None = None
+
+
+@app.get("/api/tasks")
+async def get_tasks():
+    return {"tasks": task_store.list_tasks()}
+
+
+@app.post("/api/tasks")
+async def create_task(req: TaskCreateRequest):
+    try:
+        task = task_store.create_task(req.name, req.status, req.type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    event_log.log_event("tasks", f"Task created: {req.name}")
+    return task
+
+
+@app.put("/api/tasks/{task_id}")
+async def update_task(task_id: str, req: TaskUpdateRequest):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        task = task_store.update_task(task_id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if updates.get("status") == "COMPLETE":
+        event_log.log_event("tasks", f"Task complete: {task['name']}")
+        from tools.system.notifications import notify
+        notify("Task Complete", task["name"], category="task_complete")
+    return task
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    ok = task_store.delete_task(task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"status": "deleted"}
+
+
+# ── Reminders ────────────────────────────────────────────────────────────────
+
+class ReminderCreateRequest(BaseModel):
+    name: str
+    due_at: str
+
+
+@app.get("/api/reminders")
+async def get_reminders():
+    return {"reminders": reminders_store.list_reminders()}
+
+
+@app.post("/api/reminders")
+async def create_reminder(req: ReminderCreateRequest):
+    reminder = reminders_store.create_reminder(req.name, req.due_at)
+    event_log.log_event("reminders", f"Reminder set: {req.name}")
+    return reminder
+
+
+@app.delete("/api/reminders/{reminder_id}")
+async def delete_reminder(reminder_id: str):
+    ok = reminders_store.delete_reminder(reminder_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    return {"status": "deleted"}
+
+
+# ── System Logs ──────────────────────────────────────────────────────────────
+
+LOG_FILE_PATH = ROOT_DIR / "logs" / "nyx.log"
+
+
+@app.get("/api/logs/tail")
+async def logs_tail(lines: int = 200):
+    if not LOG_FILE_PATH.exists():
+        return {"lines": [], "path": str(LOG_FILE_PATH)}
+    try:
+        with open(LOG_FILE_PATH, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        tail = [l.rstrip("\n") for l in all_lines[-lines:]]
+        return {"lines": tail, "path": str(LOG_FILE_PATH), "total_lines": len(all_lines)}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Developer diagnostics ─────────────────────────────────────────────────────
+
+@app.get("/api/dev/info")
+async def dev_info():
+    routes = sorted({
+        f"{','.join(sorted(r.methods))} {r.path}"
+        for r in app.routes
+        if hasattr(r, "methods") and hasattr(r, "path")
+    })
+    return {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "ai_provider": config.AI_PROVIDER,
+        "ollama_base_url": config.OLLAMA_BASE_URL,
+        "voice_enabled": config.VOICE_ENABLED,
+        "route_count": len(routes),
+        "routes": routes,
+        "vault_path": str(storage_provider.get_active_vault_path()),
+    }
+
+
+# ── Backup / Restore ──────────────────────────────────────────────────────────
+
+@app.get("/api/backup/export")
+async def backup_export(background_tasks: BackgroundTasks):
+    import zipfile
+    import tempfile
+    from core.vault_bridge import get_vault_path
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    zip_path = Path(tmp.name)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        vault_path = get_vault_path()
+        if vault_path.exists():
+            for f in vault_path.rglob("*"):
+                if f.is_file():
+                    zf.write(f, Path("vault") / f.relative_to(vault_path))
+
+        conv_dir = ROOT_DIR / "memory" / "conversations"
+        if conv_dir.exists():
+            for f in conv_dir.glob("*.json"):
+                zf.write(f, Path("conversations") / f.name)
+
+        for name in ("app_settings.json", "tasks.json", "reminders.json", "event_log.json",
+                     "model_assignments.json", "constellation.json"):
+            f = ROOT_DIR / "memory" / name
+            if f.exists():
+                zf.write(f, Path("config") / name)
+
+    event_log.log_event("backup", "Backup exported")
+    background_tasks.add_task(os.unlink, str(zip_path))
+    return FileResponse(zip_path, media_type="application/zip", filename="nyx_backup.zip")
+
+
+@app.post("/api/backup/import")
+async def backup_import(file: UploadFile):
+    import zipfile
+    import io
+
+    content = await file.read()
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Not a valid zip file")
+
+    restored = 0
+    for member in zf.namelist():
+        # Guard against zip-slip path traversal
+        normalized = os.path.normpath(member)
+        if normalized.startswith("..") or os.path.isabs(normalized):
+            continue
+
+        parts = Path(normalized).parts
+        if not parts:
+            continue
+
+        if parts[0] == "vault":
+            dest = storage_provider.get_active_vault_path() / Path(*parts[1:])
+        elif parts[0] == "conversations":
+            dest = ROOT_DIR / "memory" / "conversations" / Path(*parts[1:])
+        elif parts[0] == "config":
+            dest = ROOT_DIR / "memory" / Path(*parts[1:])
+        else:
+            continue
+
+        if member.endswith("/"):
+            continue
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member) as src, open(dest, "wb") as out:
+            out.write(src.read())
+        restored += 1
+
+    event_log.log_event("backup", "Backup restored", f"{restored} files restored")
+    return {"status": "restored", "files_restored": restored}
 
 
 # ── SPA fallback ─────────────────────────────────────────────────────────────

@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react'
-import { MOCK_TASKS, MOCK_REMINDERS, MOCK_SYSTEM } from '../utils/constants.js'
-import { getSystemStats } from '../services/api.js'
+import { MOCK_SYSTEM } from '../utils/constants.js'
+import { getSystemStats, getTasks, getReminders } from '../services/api.js'
 
 const STATUS_COLOR = {
   'IN PROGRESS': '#A874FF',
   'SCHEDULED':   '#4D8DFF',
   'PENDING':     '#5E587A',
-  'DONE':        '#22c55e',
+  'COMPLETE':    '#22c55e',
+  'FAILED':      '#f87171',
+}
+
+function formatDueDate(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  } catch {
+    return iso
+  }
 }
 
 function CircularMeter({ label, value, color = '#8F5CFF', size = 56 }) {
@@ -63,7 +72,9 @@ const TITLE_STYLE = {
 }
 
 export default function LeftPanels({ visible }) {
-  const [stats, setStats] = useState(MOCK_SYSTEM)
+  const [stats, setStats]     = useState(MOCK_SYSTEM)
+  const [tasks, setTasks]     = useState([])
+  const [reminders, setReminders] = useState([])
 
   useEffect(() => {
     const load = async () => {
@@ -77,6 +88,22 @@ export default function LeftPanels({ visible }) {
     }
     load()
     const id = setInterval(load, 6000)
+    return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const t = await getTasks()
+        setTasks((t.tasks || []).filter(task => task.status !== 'COMPLETE').slice(0, 6))
+      } catch {}
+      try {
+        const r = await getReminders()
+        setReminders((r.reminders || []).slice(0, 6))
+      } catch {}
+    }
+    load()
+    const id = setInterval(load, 10000)
     return () => clearInterval(id)
   }, [])
 
@@ -104,7 +131,9 @@ export default function LeftPanels({ visible }) {
       {/* Active Tasks */}
       <div style={PANEL_STYLE} className="panel-anim">
         <span style={TITLE_STYLE}>Active Tasks</span>
-        {MOCK_TASKS.map(task => (
+        {tasks.length === 0 ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)', padding: '4px 0' }}>No active tasks</div>
+        ) : tasks.map(task => (
           <div key={task.id} style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '7px 0',
@@ -132,7 +161,9 @@ export default function LeftPanels({ visible }) {
       {/* Reminders */}
       <div style={PANEL_STYLE} className="panel-anim">
         <span style={TITLE_STYLE}>Reminders</span>
-        {MOCK_REMINDERS.map(r => (
+        {reminders.length === 0 ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)', padding: '4px 0' }}>No reminders set</div>
+        ) : reminders.map(r => (
           <div key={r.id} style={{
             display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0',
             borderBottom: '1px solid rgba(100,75,200,0.10)',
@@ -143,7 +174,7 @@ export default function LeftPanels({ visible }) {
             }} />
             <div>
               <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{r.name}</div>
-              <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginTop: 1 }}>{r.date}</div>
+              <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginTop: 1 }}>{formatDueDate(r.due_at)}</div>
             </div>
           </div>
         ))}

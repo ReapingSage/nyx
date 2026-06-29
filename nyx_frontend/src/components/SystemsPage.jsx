@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { API_URL } from '../utils/constants.js'
 import { useTheme } from '../utils/themeContext.jsx'
 import { THEMES } from '../utils/themes.js'
+import { getTasks } from '../services/api.js'
 
 // ─────────────────────────────────────────────────────────────
 // THEME HELPERS
@@ -909,55 +910,59 @@ function GlobalViewPanel() {
 // ─────────────────────────────────────────────────────────────
 // BOTTOM PANELS
 // ─────────────────────────────────────────────────────────────
-const INIT_TASKS = [
-  { id:1, name:'Memory constellation sync', status:'ACTIVE',   color:'#22c55e' },
-  { id:2, name:'Vault index rebuild',        status:'PENDING',  color:'#FF9555' },
-  { id:3, name:'OpenClaw heartbeat',         status:'ACTIVE',   color:'#22c55e' },
-  { id:4, name:'Model router calibration',   status:'COMPLETE', color:'#4DC8FF' },
-  { id:5, name:'Conversation archival',      status:'QUEUED',   color:'#666' },
-]
+const TASK_STATUS_COLOR = {
+  'IN PROGRESS': '#22c55e',
+  'PENDING':     '#FF9555',
+  'SCHEDULED':   '#4DC8FF',
+  'COMPLETE':    '#4DC8FF',
+  'FAILED':      '#f87171',
+}
 
 function ActiveTasksPanel() {
-  const [tasks, setTasks] = useState(INIT_TASKS)
+  const [tasks, setTasks] = useState([])
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setTasks(prev => prev.map(t => {
-        if (t.status === 'ACTIVE'   && Math.random() < 0.12) return { ...t, status:'COMPLETE', color:'#4DC8FF' }
-        if (t.status === 'PENDING'  && Math.random() < 0.20) return { ...t, status:'ACTIVE',   color:'#22c55e' }
-        if (t.status === 'COMPLETE' && Math.random() < 0.06) return { ...t, status:'QUEUED',   color:'#666' }
-        if (t.status === 'QUEUED'   && Math.random() < 0.10) return { ...t, status:'PENDING',  color:'#FF9555' }
-        return t
-      }))
-    }, 3500)
+    const load = async () => {
+      try {
+        const { tasks: t } = await getTasks()
+        setTasks((t || []).slice(0, 8))
+      } catch {}
+    }
+    load()
+    const id = setInterval(load, 8000)
     return () => clearInterval(id)
   }, [])
 
-  const active = tasks.filter(t => t.status === 'ACTIVE').length
+  const active = tasks.filter(t => t.status === 'IN PROGRESS').length
 
   return (
     <HoloPanel title="Active Tasks" badge={`${active} RUNNING`} badgeColor="#22c55e"
       style={{ flex:1, display:'flex', flexDirection:'column', marginBottom:0, height:'100%' }}>
       <div style={{ flex:1, overflow:'hidden' }}>
-        {tasks.map(task => (
-          <div key={task.id} style={{ display:'flex', alignItems:'center', gap:7, padding:'4px 0',
-            borderBottom:'1px solid rgba(var(--color-primary-rgb),0.055)' }}>
-            <motion.div animate={{ opacity: task.status==='ACTIVE' ? [1,0.25,1] : 1 }}
-              transition={{ duration:1.6, repeat: task.status==='ACTIVE' ? Infinity : 0 }}
-              style={{ width:5, height:5, borderRadius:'50%',
-                background:task.color, boxShadow:`0 0 5px ${task.color}60`, flexShrink:0 }}
-            />
-            <span style={{ flex:1, fontFamily:'Rajdhani,sans-serif', fontSize:9.5, fontWeight:600,
-              letterSpacing:'0.08em', color:'var(--color-text-secondary)', textTransform:'uppercase',
-              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-              {task.name}
-            </span>
-            <span style={{ fontFamily:'Share Tech Mono,monospace', fontSize:7.5,
-              color:task.color, letterSpacing:'0.10em', flexShrink:0 }}>
-              {task.status}
-            </span>
-          </div>
-        ))}
+        {tasks.length === 0 ? (
+          <div style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 9, color: 'var(--color-text-disabled)', padding: '6px 0' }}>No tasks tracked</div>
+        ) : tasks.map(task => {
+          const color = TASK_STATUS_COLOR[task.status] || '#666'
+          return (
+            <div key={task.id} style={{ display:'flex', alignItems:'center', gap:7, padding:'4px 0',
+              borderBottom:'1px solid rgba(var(--color-primary-rgb),0.055)' }}>
+              <motion.div animate={{ opacity: task.status==='IN PROGRESS' ? [1,0.25,1] : 1 }}
+                transition={{ duration:1.6, repeat: task.status==='IN PROGRESS' ? Infinity : 0 }}
+                style={{ width:5, height:5, borderRadius:'50%',
+                  background:color, boxShadow:`0 0 5px ${color}60`, flexShrink:0 }}
+              />
+              <span style={{ flex:1, fontFamily:'Rajdhani,sans-serif', fontSize:9.5, fontWeight:600,
+                letterSpacing:'0.08em', color:'var(--color-text-secondary)', textTransform:'uppercase',
+                overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {task.name}
+              </span>
+              <span style={{ fontFamily:'Share Tech Mono,monospace', fontSize:7.5,
+                color, letterSpacing:'0.10em', flexShrink:0 }}>
+                {task.status}
+              </span>
+            </div>
+          )
+        })}
       </div>
     </HoloPanel>
   )

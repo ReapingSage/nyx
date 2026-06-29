@@ -36,3 +36,9 @@ memory/storage_config.json
 
 # Tray app single-instance lock (runtime state, not for repo)
 tray/.tray.lock
+
+# Per-machine app data (settings, tasks, reminders, event log) — not for repo
+memory/app_settings.json
+memory/tasks.json
+memory/reminders.json
+memory/event_log.json
