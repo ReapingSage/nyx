@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.production
+*.log
+.DS_Store
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Voice outputs (generated audio — do not commit)
+voice/outputs/*.wav
+voice/outputs/*.mp3
+
+# Voice samples are NOT ignored — manage them manually
+# voice/samples/
+
+# Personal Obsidian vault — never push (personal logs/memory)
+NYX_VAULT/
+
+# Personal chat history and derived memory — never push
+memory/conversations/
+memory/constellation.json
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

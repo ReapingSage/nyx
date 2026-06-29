@@ -1,0 +1,18 @@
+services:
+  nyx-backend:
+    build: .
+    container_name: nyx-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    restart: unless-stopped
+
+  nyx-frontend:
+    build: ./nyx_frontend
+    container_name: nyx-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - nyx-backend
+    restart: unless-stopped

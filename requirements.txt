@@ -1,0 +1,17 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+psutil>=5.9.0
+
+# ── Voice — Phase 1 (TTS) ──────────────────────────
+# Primary: works on Python 3.14+, requires internet
+edge-tts>=6.1.9
+
+# Offline fallback (basic quality, system voices)
+pyttsx3>=2.90
+
+# Best quality local TTS — requires Python 3.9-3.11 + PyTorch
+# Uncomment when on a compatible Python version:
+# TTS>=0.22.0
+# soundfile>=0.12.1
