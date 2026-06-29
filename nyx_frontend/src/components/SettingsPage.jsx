@@ -467,9 +467,12 @@ function AIModelsPanel({ onNavigate }) {
   return (
     <div style={PANEL}>
       <span style={SEC_TITLE}>AI Models</span>
+      <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12.5, color: 'var(--color-text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
+        These are the language models NYX can think and respond with. Ollama runs models locally on this machine and is the only active provider today — the list below shows what's planned next.
+      </div>
 
       <ProviderRow
-        sym="⬡" name="Ollama / Local" detail="Models run on this machine — see Model Manager"
+        sym="⬡" name="Ollama / Local" detail={ollama?.running ? 'Currently providing every NYX response' : 'Models run on this machine — see Model Manager'}
         statusLabel={ollamaLabel} statusColor={ollamaColor}
         action={
           <button
@@ -501,28 +504,98 @@ function AIModelsPanel({ onNavigate }) {
 }
 
 // ── Storage / Memory Panel — real, functional provider switch ──
-function StorageProviderCard({ active, title, subtitle, onClick, extra }) {
+function StorageProviderCard({ active, title, subtitle, bullets, onClick, extra }) {
   return (
     <div
       onClick={onClick}
       style={{
-        flex: 1, minWidth: 200, cursor: onClick ? 'pointer' : 'default',
-        padding: '13px 14px', borderRadius: 12,
+        flex: 1, minWidth: 220, cursor: onClick ? 'pointer' : 'default',
+        padding: '14px 15px', borderRadius: 12,
         background: active ? 'rgba(var(--color-primary-rgb), 0.16)' : 'rgba(8,10,26,0.62)',
         border: `1.5px solid ${active ? 'rgba(var(--color-primary-rgb), 0.55)' : 'rgba(120,90,220,0.20)'}`,
         boxShadow: active ? '0 0 18px rgba(var(--color-primary-rgb), 0.18)' : 'none',
         transition: 'all 0.2s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-        <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: active ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>{title}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 12.5, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: active ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>{title}</span>
         {active && (
           <span style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: '#22c55e', letterSpacing: '0.08em' }}>● ACTIVE</span>
         )}
       </div>
-      <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.6 }}>{subtitle}</div>
+      <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.6, marginBottom: bullets ? 8 : 0 }}>{subtitle}</div>
+      {bullets && (
+        <ul style={{ margin: 0, paddingLeft: 14, fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', lineHeight: 1.8 }}>
+          {bullets.map((b, i) => <li key={i}>{b}</li>)}
+        </ul>
+      )}
       {extra}
     </div>
+  )
+}
+
+// ── Switch confirmation modal — shown before any storage provider change ──
+function SwitchProviderModal({ fromLabel, toLabel, toPath, onConfirm, onCancel, switching }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      onClick={onCancel}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.82)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 400, backdropFilter: 'blur(5px)',
+      }}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'rgba(4,5,18,0.99)', border: '1px solid rgba(var(--color-primary-rgb), 0.35)',
+          borderRadius: 12, padding: 24, maxWidth: 420, width: '90%',
+          boxShadow: '0 0 50px rgba(var(--color-primary-rgb), 0.15)',
+        }}
+      >
+        <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 11, letterSpacing: '0.22em', color: '#facc15', fontWeight: 700, marginBottom: 12 }}>
+          ⚠ SWITCH STORAGE PROVIDER
+        </div>
+        <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12.5, color: 'var(--color-text-secondary)', lineHeight: 1.7, marginBottom: 12 }}>
+          You're switching from <b style={{ color: 'var(--color-accent)' }}>{fromLabel}</b> to <b style={{ color: 'var(--color-accent)' }}>{toLabel}</b>.
+        </div>
+        <ul style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-muted)', lineHeight: 2, marginBottom: 14, paddingLeft: 18 }}>
+          <li>New memory notes and logs will be written to <span style={{ color: 'var(--color-primary)' }}>{toPath}</span></li>
+          <li>Nothing already saved in {fromLabel} is moved, merged, or deleted</li>
+          <li>NYX stops reading from {fromLabel} until you switch back to it</li>
+        </ul>
+        <div style={{
+          fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#facc15',
+          padding: '8px 11px', background: 'rgba(250,204,21,0.08)', borderRadius: 7, marginBottom: 18,
+        }}>
+          This does not migrate or combine your existing memories — it only changes where new ones go.
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              flex: 1, padding: '9px 0', background: 'rgba(var(--color-primary-rgb),0.08)',
+              border: '1px solid rgba(var(--color-primary-rgb),0.22)', borderRadius: 7,
+              color: 'var(--color-text-muted)', cursor: 'pointer', fontFamily: 'Rajdhani, sans-serif',
+              fontSize: 10.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase',
+            }}
+          >Cancel</button>
+          <button
+            onClick={onConfirm} disabled={switching}
+            style={{
+              flex: 1, padding: '9px 0',
+              background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+              border: 'none', borderRadius: 7, color: '#fff', cursor: switching ? 'not-allowed' : 'pointer',
+              fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.14em',
+              textTransform: 'uppercase', opacity: switching ? 0.6 : 1,
+              boxShadow: '0 0 16px rgba(var(--color-primary-rgb),0.30)',
+            }}
+          >{switching ? 'Switching...' : 'Confirm Switch'}</button>
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
 
@@ -531,9 +604,9 @@ function StorageMemoryPanel() {
   const [pathInput, setPathInput] = useState('')
   const [checkResult, setCheckResult] = useState(null)
   const [checking, setChecking] = useState(false)
-  const [connecting, setConnecting] = useState(false)
   const [switching, setSwitching] = useState(false)
   const [error, setError]       = useState(null)
+  const [pendingTarget, setPendingTarget] = useState(null) // { provider, path } | null
 
   const refresh = useCallback(async () => {
     const st = await getStorageStatus()
@@ -543,16 +616,11 @@ function StorageMemoryPanel() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  async function handleSelectLocal() {
+  const PROVIDER_LABEL = { nyx_local: 'NYX Local Storage', obsidian: 'Obsidian' }
+
+  function requestSwitchToLocal() {
     setError(null)
-    setSwitching(true)
-    try {
-      setStatus(await selectStorageProvider('nyx_local'))
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSwitching(false)
-    }
+    setPendingTarget({ provider: 'nyx_local' })
   }
 
   async function handleCheckPath() {
@@ -560,7 +628,13 @@ function StorageMemoryPanel() {
     setChecking(true)
     setError(null)
     try {
-      setCheckResult(await checkStoragePath(pathInput.trim()))
+      const result = await checkStoragePath(pathInput.trim())
+      setCheckResult(result)
+      if (result.is_dir) {
+        setPendingTarget({ provider: 'obsidian', path: result.path })
+      } else {
+        setError(`Folder not found at "${pathInput.trim()}" — double-check the path, or pick NYX Local Storage instead.`)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -568,17 +642,19 @@ function StorageMemoryPanel() {
     }
   }
 
-  async function handleConnectObsidian() {
-    if (!pathInput.trim()) return
-    setConnecting(true)
+  async function handleConfirmSwitch() {
+    if (!pendingTarget) return
+    setSwitching(true)
     setError(null)
     try {
-      setStatus(await selectStorageProvider('obsidian', pathInput.trim()))
+      const st = await selectStorageProvider(pendingTarget.provider, pendingTarget.path)
+      setStatus(st)
       setCheckResult(null)
+      setPendingTarget(null)
     } catch (e) {
       setError(e.message)
     } finally {
-      setConnecting(false)
+      setSwitching(false)
     }
   }
 
@@ -593,30 +669,56 @@ function StorageMemoryPanel() {
 
   const isLocal    = status.active_provider === 'nyx_local'
   const isObsidian = status.active_provider === 'obsidian'
+  const activeLabel = isLocal ? 'NYX Local Storage' : 'Obsidian'
 
   return (
     <div style={PANEL}>
       <span style={SEC_TITLE}>Storage / Memory</span>
       <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12.5, color: 'var(--color-text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
-        Choose where NYX keeps its memory notes — managed automatically, or inside an Obsidian vault you already use. Switching providers takes effect immediately, no restart needed.
+        This controls where NYX keeps its memory — the notes it remembers about you and the logs of every conversation. Pick whichever fits how you work; switching takes effect immediately and never touches what's already saved in the provider you're leaving.
+      </div>
+
+      {/* Active provider banner */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14,
+        padding: '8px 12px', borderRadius: 8,
+        background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.22)',
+      }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e' }} />
+        <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#22c55e', letterSpacing: '0.06em' }}>
+          ACTIVE PROVIDER: {activeLabel}
+        </span>
+        <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginLeft: 'auto' }}>
+          {status.active_vault_path}
+        </span>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <StorageProviderCard
           active={isLocal}
           title="NYX Local Storage"
-          subtitle="Created and managed automatically. No setup required."
-          onClick={!isLocal && !switching ? handleSelectLocal : undefined}
+          subtitle="NYX creates and manages a private folder for you — nothing to set up."
+          bullets={[
+            'Stored in NYX_VAULT/ inside this install',
+            'Works the moment you start chatting',
+            'Best if you don’t already use Obsidian',
+          ]}
+          onClick={!isLocal ? requestSwitchToLocal : undefined}
         />
         <StorageProviderCard
           active={isObsidian}
           title="Obsidian"
-          subtitle={status.obsidian_installed ? 'Obsidian detected on this machine.' : "Not detected — that's OK, any folder works."}
+          subtitle={status.obsidian_installed ? 'Obsidian detected on this machine.' : "Not detected on this machine — that's fine, any folder works."}
+          bullets={[
+            'Connects to a vault folder you already use',
+            'NYX only reads/writes its own Memory & Logs notes there',
+            'Browse, graph, and edit your memories in Obsidian itself',
+          ]}
           extra={!status.obsidian_installed && (
             <button
               onClick={(e) => { e.stopPropagation(); window.open('https://obsidian.md', '_blank') }}
               style={{
-                marginTop: 8, fontFamily: 'Rajdhani, sans-serif', fontSize: 9, fontWeight: 700,
+                marginTop: 9, fontFamily: 'Rajdhani, sans-serif', fontSize: 9, fontWeight: 700,
                 letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--color-primary)',
                 background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.30)',
                 borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
@@ -627,12 +729,15 @@ function StorageMemoryPanel() {
       </div>
 
       <div style={{ marginBottom: 6, fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>
-        Obsidian vault path
+        Connect an Obsidian vault
+      </div>
+      <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginBottom: 8, lineHeight: 1.6 }}>
+        Paste the path to an existing vault folder. NYX checks it exists, then asks you to confirm before switching.
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <input
           value={pathInput}
-          onChange={e => { setPathInput(e.target.value); setCheckResult(null) }}
+          onChange={e => { setPathInput(e.target.value); setCheckResult(null); setError(null) }}
           placeholder="C:\Users\you\Documents\MyVault"
           style={{
             flex: 1, minWidth: 200, padding: '8px 10px',
@@ -646,41 +751,35 @@ function StorageMemoryPanel() {
           onClick={handleCheckPath} disabled={checking || !pathInput.trim()}
           style={{
             fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
-            letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)',
-            background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.25)',
-            borderRadius: 7, padding: '8px 14px', cursor: 'pointer',
-          }}
-        >{checking ? 'Checking...' : 'Check'}</button>
-        <button
-          onClick={handleConnectObsidian} disabled={connecting || !pathInput.trim()}
-          style={{
-            fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
             letterSpacing: '0.12em', textTransform: 'uppercase', color: '#fff',
             background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
             border: 'none', borderRadius: 7, padding: '8px 14px', cursor: 'pointer',
             boxShadow: '0 0 14px rgba(var(--color-primary-rgb),0.30)',
           }}
-        >{connecting ? 'Connecting...' : 'Connect'}</button>
+        >{checking ? 'Checking...' : 'Check & Connect'}</button>
       </div>
 
-      {checkResult && (
-        <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: checkResult.is_dir ? '#22c55e' : '#f87171' }}>
-          {checkResult.is_dir
-            ? (checkResult.is_obsidian_vault ? '✓ Valid Obsidian vault folder' : "✓ Folder exists (not yet opened in Obsidian — that's fine)")
-            : '✗ Folder not found at that path'}
+      {checkResult?.is_dir && (
+        <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#22c55e' }}>
+          {checkResult.is_obsidian_vault ? '✓ Valid Obsidian vault folder' : "✓ Folder exists (not yet opened in Obsidian — that's fine)"}
         </div>
       )}
       {error && (
         <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#f87171' }}>{error}</div>
       )}
 
-      <div style={{
-        marginTop: 14, padding: '9px 12px', borderRadius: 8,
-        background: 'rgba(var(--color-primary-rgb),0.05)', border: '1px solid rgba(var(--color-primary-rgb),0.10)',
-        fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.05em',
-      }}>
-        ACTIVE: {isLocal ? 'NYX Local Storage' : `Obsidian — ${status.active_vault_path}`}
-      </div>
+      <AnimatePresence>
+        {pendingTarget && (
+          <SwitchProviderModal
+            fromLabel={activeLabel}
+            toLabel={PROVIDER_LABEL[pendingTarget.provider]}
+            toPath={pendingTarget.provider === 'nyx_local' ? 'NYX_VAULT/ (inside this install)' : pendingTarget.path}
+            onConfirm={handleConfirmSwitch}
+            onCancel={() => setPendingTarget(null)}
+            switching={switching}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -697,6 +796,9 @@ function ToolsExtensionsPanel() {
   return (
     <div style={PANEL}>
       <span style={SEC_TITLE}>Tools / Extensions</span>
+      <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12.5, color: 'var(--color-text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
+        Actions NYX can take on this machine — opening apps, browsing the web, managing files. These run locally and don't need any setup or provider connection.
+      </div>
 
       {localTools.map(t => (
         <ProviderRow key={t.name} sym={t.sym} name={t.name} detail={t.detail} statusLabel="ACTIVE" statusColor="#22c55e" />

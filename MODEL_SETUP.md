@@ -107,6 +107,17 @@ After pulling new models, restart NYX so it picks up the change:
 2. Start it again
 3. Open the Model Manager in the dashboard and it will automatically detect the newly installed models
 
+## 11. Memory & Storage — a separate system from models
+
+Models (covered above) are what NYX *thinks* with. Memory is what NYX *remembers* — notes about you and a log of every conversation. These are unrelated systems with separate setup:
+
+- **NYX Local Storage (default)** — NYX creates a `NYX_VAULT/` folder inside the project automatically the first time you chat. No setup needed.
+- **Obsidian** — point NYX at an existing Obsidian vault instead, so your NYX notes show up alongside your other notes. NYX only reads/writes its own `Memory/` and `Logs/` subfolders inside that vault — nothing else is touched.
+
+Switch between them anytime in **Settings → Providers → Storage / Memory** — it takes effect immediately, no restart, and never deletes or merges your existing notes when you switch. NYX confirms with you before every switch so it's always clear what will (and won't) happen.
+
+See the [Memory & Storage](README.md#memory--storage) section in the README for the full walkthrough.
+
 ---
 
 ## Quick reference
