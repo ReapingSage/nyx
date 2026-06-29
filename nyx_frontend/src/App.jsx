@@ -17,7 +17,11 @@ import SettingsPage         from './components/SettingsPage.jsx'
 import SystemsPage          from './components/SystemsPage.jsx'
 import TasksPage            from './components/TasksPage.jsx'
 import UpdatesPage          from './components/UpdatesPage.jsx'
+import ModelManagerPage     from './components/ModelManagerPage.jsx'
 import { useTheme, NYX_PURPLE_FREEZE } from './utils/themeContext.jsx'
+import { PAGE_PATHS } from './utils/constants.js'
+
+const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_PATHS).map(([page, path]) => [path, page]))
 
 // ── Layout constants ──────────────────────────────
 const TOPBAR_H   = 56
@@ -53,6 +57,9 @@ export default function App() {
     setChatMode(false)
     setOrbState('idle')
     setActivePage('dashboard')
+    if (window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/')
+    }
   }, [])
 
   function resetIdleTimer() {
@@ -89,13 +96,26 @@ export default function App() {
     return () => window.removeEventListener('resize', handler)
   }, [])
 
-  // Deep-link support — e.g. tray app opens ?page=settings directly
+  // Deep-link support — real URL paths (e.g. /settings, /models) instead of
+  // a query-param workaround. Tray app and bookmarks open these directly;
+  // the server falls back to index.html for any unknown path (see ui/server.py).
   useEffect(() => {
-    const page = new URLSearchParams(window.location.search).get('page')
-    if (page) {
+    const page = PATH_TO_PAGE[window.location.pathname]
+    if (page && page !== 'dashboard') {
       setActivePage(page)
       setIdleScreen(false)
     }
+  }, [])
+
+  // Keep the URL bar in sync with in-app navigation, and support browser back/forward
+  useEffect(() => {
+    const onPopState = () => {
+      const page = PATH_TO_PAGE[window.location.pathname] || 'dashboard'
+      setActivePage(page)
+      setIdleScreen(false)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
   // Close sidebar when switching to desktop
@@ -147,6 +167,10 @@ export default function App() {
   const handleNav = useCallback((page) => {
     if (idleScreen) exitIdleScreen()
     setActivePage(page)
+    const path = PAGE_PATHS[page] || '/'
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, '', path)
+    }
     if (chatMode) exitChat()
     if (isMobile) setSidebarOpen(false)
   }, [idleScreen, exitIdleScreen, chatMode, exitChat, isMobile])
@@ -250,6 +274,8 @@ export default function App() {
                     </SyncWrap>
                   ) : activePage === 'settings' ? (
                     <SettingsPage />
+                  ) : activePage === 'models' ? (
+                    <ModelManagerPage />
                   ) : activePage === 'systems' ? (
                     <SystemsPage />
                   ) : activePage === 'tasks' ? (
@@ -362,7 +388,7 @@ export default function App() {
           left:    orbL,
           top:     orbT,
           scale:   orbScale,
-          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates'].includes(activePage)) ? 0 : 1),
+          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates','models'].includes(activePage)) ? 0 : 1),
         }}
         transition={{
           type: 'spring',

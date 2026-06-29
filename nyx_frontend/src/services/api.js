@@ -120,3 +120,65 @@ export async function reconnectSystems() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+// ── Model Manager ──────────────────────────────────
+export async function getModelsStatus() {
+  const res = await fetch(`${API_URL}/api/models/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getModelsList() {
+  const res = await fetch(`${API_URL}/api/models/list`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getRecommendedModels(profile = 'desktop') {
+  const res = await fetch(`${API_URL}/api/models/recommended?profile=${profile}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function assignModelRole(role, model) {
+  const res = await fetch(`${API_URL}/api/models/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role, model }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteModel(name) {
+  const res = await fetch(`${API_URL}/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// Streams newline-delimited JSON progress objects from Ollama's pull API.
+// Calls onProgress(obj) for each line as it arrives.
+export async function pullModel(name, onProgress) {
+  const res = await fetch(`${API_URL}/api/models/pull`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try { onProgress(JSON.parse(line)) } catch { /* ignore malformed line */ }
+    }
+  }
+}

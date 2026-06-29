@@ -83,15 +83,12 @@ class NyxTrayApp:
     def open_settings(self, _icon=None, _item=None):
         if not self.is_running():
             self.start_service()
-        webbrowser.open(f"{BASE_URL}/?page=settings")
+        webbrowser.open(f"{BASE_URL}/settings")
 
     def open_model_manager(self, _icon=None, _item=None):
-        # No dedicated frontend page exists yet — opens the live API docs
-        # for the /api/models/* routes in the meantime. Switch this to
-        # f"{BASE_URL}/?page=models" once that page is built.
         if not self.is_running():
             self.start_service()
-        webbrowser.open(f"{BASE_URL}/docs")
+        webbrowser.open(f"{BASE_URL}/models")
 
     # ── Menu ─────────────────────────────────────────────────
 
