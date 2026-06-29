@@ -3,12 +3,17 @@ tray/tray_app.py — NYX System Tray Application
 Run with: pythonw tray/tray_app.py   (or: python tray/tray_app.py)
 
 Controls the NYX backend (ui.server:app via uvicorn) from the Windows
-system tray — start/stop the service, open the dashboard, settings,
-and Model Manager in your browser.
+system tray, and opens the dashboard in a real native window (via
+pywebview/WebView2) — not a browser tab.
 
 Detects NYX whether it was started by this tray app, in a terminal, or
 any other way — Start won't double-launch a second instance on the same
 port, and Stop can shut down an instance it didn't itself start.
+
+Threading model: pywebview owns the main thread (webview.start() blocks
+there). The tray icon (pystray) runs on a thread pywebview spawns for us.
+Closing the NYX window hides it instead of destroying it, so the GUI loop
+— and the tray icon — keep running until you choose Exit.
 """
 
 import sys
@@ -17,10 +22,10 @@ import socket
 import subprocess
 import threading
 import time
-import webbrowser
 
 import psutil
 import pystray
+import webview
 from PIL import Image, ImageDraw
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,7 +149,9 @@ REFRESH_INTERVAL_SECS = 5
 class NyxTrayApp:
     def __init__(self):
         self.process: subprocess.Popen | None = None
+        self.window: "webview.Window | None" = None
         self._stop_refresh = threading.Event()
+        self._quitting = False
         self.icon = pystray.Icon(
             "nyx",
             make_icon_image(),
@@ -189,7 +196,7 @@ class NyxTrayApp:
 
     def _wait_until_ready(self):
         """After starting, give the server a moment to actually bind the port
-        before opening a browser tab to it."""
+        before pointing a window at it."""
         for _ in range(START_POLL_ATTEMPTS):
             if _port_is_open():
                 return
@@ -206,25 +213,39 @@ class NyxTrayApp:
         while not self._stop_refresh.wait(REFRESH_INTERVAL_SECS):
             self._refresh()
 
-    # ── Browser actions ─────────────────────────────────────
+    # ── Native window actions ────────────────────────────────
+
+    def _on_window_closing(self):
+        """Closing the window (the X button) hides it instead of destroying
+        it — that keeps pywebview's GUI loop (and the tray icon riding on
+        it) alive. Exit explicitly destroys it for a real shutdown."""
+        if self._quitting:
+            return True  # let it actually close this time
+        self.window.hide()
+        return False  # cancel the close
+
+    def _open_window(self, path=""):
+        if not self.is_running():
+            self.start_service()
+            self._wait_until_ready()
+
+        url = f"{BASE_URL}{path}"
+        if self.window is None:
+            self.window = webview.create_window("NYX", url, width=1200, height=800)
+            self.window.events.closing += self._on_window_closing
+        else:
+            self.window.load_url(url)
+            self.window.restore()
+            self.window.show()
 
     def open_dashboard(self, _icon=None, _item=None):
-        if not self.is_running():
-            self.start_service()
-            self._wait_until_ready()
-        webbrowser.open(BASE_URL)
+        self._open_window()
 
     def open_settings(self, _icon=None, _item=None):
-        if not self.is_running():
-            self.start_service()
-            self._wait_until_ready()
-        webbrowser.open(f"{BASE_URL}/settings")
+        self._open_window("/settings")
 
     def open_model_manager(self, _icon=None, _item=None):
-        if not self.is_running():
-            self.start_service()
-            self._wait_until_ready()
-        webbrowser.open(f"{BASE_URL}/models")
+        self._open_window("/models")
 
     # ── Menu ─────────────────────────────────────────────────
 
@@ -251,12 +272,26 @@ class NyxTrayApp:
         if self.process is not None and self.process.poll() is None:
             self.stop_service()
         self._stop_refresh.set()
+        self._quitting = True
+        if self.window is not None:
+            self.window.destroy()
         self.icon.stop()
+
+    def _run_tray(self):
+        """Runs on the thread pywebview spawns for us via webview.start()."""
+        threading.Thread(target=self._refresh_loop, daemon=True).start()
+        self.icon.run()
 
     def run(self):
         self.start_service()
-        threading.Thread(target=self._refresh_loop, daemon=True).start()
-        self.icon.run()
+        self._wait_until_ready()
+
+        # pywebview requires at least one window to exist before start() —
+        # this also doubles as the main dashboard window shown on launch.
+        self.window = webview.create_window("NYX", BASE_URL, width=1200, height=800)
+        self.window.events.closing += self._on_window_closing
+
+        webview.start(self._run_tray, debug=False)
 
 
 def main():
