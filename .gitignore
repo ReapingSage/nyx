@@ -30,3 +30,6 @@ memory/constellation.json
 
 # Per-machine model role assignments (varies per install)
 memory/model_assignments.json
+
+# Per-machine storage provider selection (e.g. connected Obsidian vault path)
+memory/storage_config.json

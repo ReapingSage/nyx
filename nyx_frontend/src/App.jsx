@@ -273,7 +273,7 @@ export default function App() {
                       <GlobalView onClose={() => handleNav('dashboard')} />
                     </SyncWrap>
                   ) : activePage === 'settings' ? (
-                    <SettingsPage />
+                    <SettingsPage onNavigate={handleNav} />
                   ) : activePage === 'models' ? (
                     <ModelManagerPage />
                   ) : activePage === 'systems' ? (

@@ -1,7 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { THEMES, BACKGROUND_STYLES } from '../utils/themes.js'
 import { useTheme } from '../utils/themeContext.jsx'
+import {
+  getModelsStatus,
+  getStorageStatus, selectStorageProvider, checkStoragePath,
+} from '../services/api.js'
 // useTheme is used both here (main SettingsPage) and inside AppearanceSection
 
 // ── Settings categories (only used here) ─────────────────────
@@ -427,37 +431,299 @@ function AIRoutingSection() {
   )
 }
 
-// ── Providers Section ─────────────────────────────────────────
-function ProvidersSection() {
-  const providers = [
+// ── Provider row — shared by AI Models / Tools panels ─────────
+function ProviderRow({ sym, name, detail, statusLabel, statusColor, action }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
+      <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, border: '1px solid rgba(var(--color-primary-rgb), 0.22)', background: 'rgba(var(--color-primary-rgb), 0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--color-text-muted)' }}>{sym}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>{name}</div>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', marginTop: 1 }}>{detail}</div>
+      </div>
+      <span style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: statusColor || 'var(--color-text-disabled)', letterSpacing: '0.06em' }}>{statusLabel}</span>
+      {action}
+    </div>
+  )
+}
+
+// ── AI Models Panel — real Ollama status + future cloud providers ──
+function AIModelsPanel({ onNavigate }) {
+  const [ollama, setOllama] = useState(null)
+
+  useEffect(() => {
+    getModelsStatus().then(setOllama).catch(() => setOllama({ installed: false, running: false }))
+  }, [])
+
+  const cloudProviders = [
     { name: 'Anthropic',       models: 'Claude 4 · Opus · Sonnet · Haiku', sym: '◈' },
     { name: 'OpenAI',          models: 'GPT-4o · o3 · o4-mini',            sym: '◯' },
     { name: 'Google DeepMind', models: 'Gemini 2.0 · Flash · Pro',         sym: '◆' },
     { name: 'Mistral AI',      models: 'Mistral Large · Codestral',        sym: '◐' },
-    { name: 'Local / Ollama',  models: 'Custom models via localhost',      sym: '⬡' },
   ]
+
+  const ollamaLabel = ollama === null ? 'CHECKING...' : ollama.running ? 'ACTIVE' : 'OFFLINE'
+  const ollamaColor = ollama === null ? 'var(--color-text-disabled)' : ollama.running ? '#22c55e' : '#f87171'
+
+  return (
+    <div style={PANEL}>
+      <span style={SEC_TITLE}>AI Models</span>
+
+      <ProviderRow
+        sym="⬡" name="Ollama / Local" detail="Models run on this machine — see Model Manager"
+        statusLabel={ollamaLabel} statusColor={ollamaColor}
+        action={
+          <button
+            onClick={() => onNavigate?.('models')}
+            style={{
+              fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700,
+              letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--color-primary)',
+              background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.30)',
+              borderRadius: 6, padding: '5px 10px', cursor: 'pointer', marginLeft: 10,
+            }}
+          >Manage</button>
+        }
+      />
+
+      {cloudProviders.map(p => (
+        <ProviderRow key={p.name} sym={p.sym} name={p.name} detail={p.models} statusLabel="COMING SOON" />
+      ))}
+
+      <div style={{
+        marginTop: 14, padding: '10px 14px', borderRadius: 10,
+        background: 'rgba(var(--color-primary-rgb), 0.06)', border: '1px solid rgba(var(--color-primary-rgb), 0.12)',
+      }}>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.7 }}>
+          NYX is built as a provider system — more AI providers can be added here later without changing how routing works.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Storage / Memory Panel — real, functional provider switch ──
+function StorageProviderCard({ active, title, subtitle, onClick, extra }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        flex: 1, minWidth: 200, cursor: onClick ? 'pointer' : 'default',
+        padding: '13px 14px', borderRadius: 12,
+        background: active ? 'rgba(var(--color-primary-rgb), 0.16)' : 'rgba(8,10,26,0.62)',
+        border: `1.5px solid ${active ? 'rgba(var(--color-primary-rgb), 0.55)' : 'rgba(120,90,220,0.20)'}`,
+        boxShadow: active ? '0 0 18px rgba(var(--color-primary-rgb), 0.18)' : 'none',
+        transition: 'all 0.2s',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+        <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: active ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>{title}</span>
+        {active && (
+          <span style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: '#22c55e', letterSpacing: '0.08em' }}>● ACTIVE</span>
+        )}
+      </div>
+      <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.6 }}>{subtitle}</div>
+      {extra}
+    </div>
+  )
+}
+
+function StorageMemoryPanel() {
+  const [status, setStatus]     = useState(null)
+  const [pathInput, setPathInput] = useState('')
+  const [checkResult, setCheckResult] = useState(null)
+  const [checking, setChecking] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const [error, setError]       = useState(null)
+
+  const refresh = useCallback(async () => {
+    const st = await getStorageStatus()
+    setStatus(st)
+    if (st.obsidian_path) setPathInput(st.obsidian_path)
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  async function handleSelectLocal() {
+    setError(null)
+    setSwitching(true)
+    try {
+      setStatus(await selectStorageProvider('nyx_local'))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  async function handleCheckPath() {
+    if (!pathInput.trim()) return
+    setChecking(true)
+    setError(null)
+    try {
+      setCheckResult(await checkStoragePath(pathInput.trim()))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  async function handleConnectObsidian() {
+    if (!pathInput.trim()) return
+    setConnecting(true)
+    setError(null)
+    try {
+      setStatus(await selectStorageProvider('obsidian', pathInput.trim()))
+      setCheckResult(null)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  if (!status) {
+    return (
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Storage / Memory</span>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div>
+      </div>
+    )
+  }
+
+  const isLocal    = status.active_provider === 'nyx_local'
+  const isObsidian = status.active_provider === 'obsidian'
+
+  return (
+    <div style={PANEL}>
+      <span style={SEC_TITLE}>Storage / Memory</span>
+      <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12.5, color: 'var(--color-text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
+        Choose where NYX keeps its memory notes — managed automatically, or inside an Obsidian vault you already use. Switching providers takes effect immediately, no restart needed.
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <StorageProviderCard
+          active={isLocal}
+          title="NYX Local Storage"
+          subtitle="Created and managed automatically. No setup required."
+          onClick={!isLocal && !switching ? handleSelectLocal : undefined}
+        />
+        <StorageProviderCard
+          active={isObsidian}
+          title="Obsidian"
+          subtitle={status.obsidian_installed ? 'Obsidian detected on this machine.' : "Not detected — that's OK, any folder works."}
+          extra={!status.obsidian_installed && (
+            <button
+              onClick={(e) => { e.stopPropagation(); window.open('https://obsidian.md', '_blank') }}
+              style={{
+                marginTop: 8, fontFamily: 'Rajdhani, sans-serif', fontSize: 9, fontWeight: 700,
+                letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--color-primary)',
+                background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.30)',
+                borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
+              }}
+            >Get Obsidian</button>
+          )}
+        />
+      </div>
+
+      <div style={{ marginBottom: 6, fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>
+        Obsidian vault path
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <input
+          value={pathInput}
+          onChange={e => { setPathInput(e.target.value); setCheckResult(null) }}
+          placeholder="C:\Users\you\Documents\MyVault"
+          style={{
+            flex: 1, minWidth: 200, padding: '8px 10px',
+            background: 'rgba(var(--color-bg-rgb), 0.70)',
+            border: '1px solid rgba(var(--color-primary-rgb), 0.22)',
+            borderRadius: 7, color: 'var(--color-accent)',
+            fontFamily: 'Share Tech Mono', fontSize: 10.5, outline: 'none',
+          }}
+        />
+        <button
+          onClick={handleCheckPath} disabled={checking || !pathInput.trim()}
+          style={{
+            fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)',
+            background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.25)',
+            borderRadius: 7, padding: '8px 14px', cursor: 'pointer',
+          }}
+        >{checking ? 'Checking...' : 'Check'}</button>
+        <button
+          onClick={handleConnectObsidian} disabled={connecting || !pathInput.trim()}
+          style={{
+            fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.12em', textTransform: 'uppercase', color: '#fff',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+            border: 'none', borderRadius: 7, padding: '8px 14px', cursor: 'pointer',
+            boxShadow: '0 0 14px rgba(var(--color-primary-rgb),0.30)',
+          }}
+        >{connecting ? 'Connecting...' : 'Connect'}</button>
+      </div>
+
+      {checkResult && (
+        <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: checkResult.is_dir ? '#22c55e' : '#f87171' }}>
+          {checkResult.is_dir
+            ? (checkResult.is_obsidian_vault ? '✓ Valid Obsidian vault folder' : "✓ Folder exists (not yet opened in Obsidian — that's fine)")
+            : '✗ Folder not found at that path'}
+        </div>
+      )}
+      {error && (
+        <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#f87171' }}>{error}</div>
+      )}
+
+      <div style={{
+        marginTop: 14, padding: '9px 12px', borderRadius: 8,
+        background: 'rgba(var(--color-primary-rgb),0.05)', border: '1px solid rgba(var(--color-primary-rgb),0.10)',
+        fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.05em',
+      }}>
+        ACTIVE: {isLocal ? 'NYX Local Storage' : `Obsidian — ${status.active_vault_path}`}
+      </div>
+    </div>
+  )
+}
+
+// ── Tools / Extensions Panel — local tools + future plugin providers ──
+function ToolsExtensionsPanel() {
+  const localTools = [
+    { name: 'Desktop Automation', detail: 'Keyboard, mouse, app launching', sym: '⌘' },
+    { name: 'Web Tools',          detail: 'Search, weather, browser control', sym: '◎' },
+    { name: 'System Tools',       detail: 'File operations, notifications', sym: '⊡' },
+    { name: 'Coding Tools',       detail: 'VS Code / editor integration',  sym: '⟁' },
+  ]
+
+  return (
+    <div style={PANEL}>
+      <span style={SEC_TITLE}>Tools / Extensions</span>
+
+      {localTools.map(t => (
+        <ProviderRow key={t.name} sym={t.sym} name={t.name} detail={t.detail} statusLabel="ACTIVE" statusColor="#22c55e" />
+      ))}
+
+      <div style={{
+        marginTop: 14, padding: '10px 14px', borderRadius: 10,
+        background: 'rgba(var(--color-primary-rgb), 0.06)', border: '1px dashed rgba(var(--color-primary-rgb), 0.30)',
+      }}>
+        <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-primary)', marginBottom: 4 }}>
+          Plugin Providers
+        </div>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.6 }}>
+          Support for third-party plugin providers is planned for a future release.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Providers Section ─────────────────────────────────────────
+function ProvidersSection({ onNavigate }) {
   return (
     <div style={{ paddingBottom: 24 }}>
-      <div style={PANEL}>
-        <span style={SEC_TITLE}>API Providers</span>
-        {providers.map(p => (
-          <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
-            <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, border: '1px solid rgba(var(--color-primary-rgb), 0.22)', background: 'rgba(var(--color-primary-rgb), 0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--color-text-muted)' }}>{p.sym}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>{p.name}</div>
-              <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', marginTop: 1 }}>{p.models}</div>
-            </div>
-            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.06em' }}>NOT CONFIGURED</span>
-          </div>
-        ))}
-        <button style={{
-          marginTop: 14, width: '100%', padding: '9px', borderRadius: 9,
-          background: 'rgba(var(--color-primary-rgb), 0.07)',
-          border: '1px dashed rgba(var(--color-primary-rgb), 0.30)',
-          color: 'var(--color-primary)', fontFamily: 'Rajdhani, sans-serif',
-          fontSize: 10, fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', cursor: 'pointer',
-        }}>+ Add Provider</button>
-      </div>
+      <AIModelsPanel onNavigate={onNavigate} />
+      <StorageMemoryPanel />
+      <ToolsExtensionsPanel />
     </div>
   )
 }
@@ -508,7 +774,7 @@ function ComingSoonSection({ name }) {
 }
 
 // ── Main SettingsPage ─────────────────────────────────────────
-export default function SettingsPage() {
+export default function SettingsPage({ onNavigate }) {
   const { themeId, setThemeId, bgStyle, setBgStyle } = useTheme()
 
   const [activeSection,  setActiveSection]  = useState('appearance')
@@ -525,7 +791,7 @@ export default function SettingsPage() {
     switch (activeSection) {
       case 'appearance':  return <AppearanceSection currentTheme={themeId} onThemeChange={setThemeId} bgStyle={bgStyle} onBgStyleChange={setBgStyle} />
       case 'ai-routing':  return <AIRoutingSection />
-      case 'providers':   return <ProvidersSection />
+      case 'providers':   return <ProvidersSection onNavigate={onNavigate} />
       case 'performance': return <PerformanceSection />
       default:            return <ComingSoonSection name={activeCat?.label || activeSection} />
     }

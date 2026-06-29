@@ -31,7 +31,7 @@ class NyxAgent:
 
     def _vault_mtime_current(self) -> float:
         """Return the newest mtime across all Memory/*.md files."""
-        d = vault_bridge.MEMORY_DIR
+        d = vault_bridge.get_memory_dir()
         if not d.exists():
             return 0.0
         mtimes = [f.stat().st_mtime for f in d.glob("*.md") if f.is_file()]

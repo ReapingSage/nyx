@@ -316,11 +316,12 @@ def scan_vault_memory_files() -> list[dict]:
         r'|—\s*',                        # em-dash prefix
     )
 
-    if not vault_bridge.MEMORY_DIR.exists():
+    memory_dir = vault_bridge.get_memory_dir()
+    if not memory_dir.exists():
         return []
 
     saved = []
-    for md_file in sorted(vault_bridge.MEMORY_DIR.glob("*.md")):
+    for md_file in sorted(memory_dir.glob("*.md")):
         stem = md_file.stem.lower()
         category = FILE_CAT.get(stem, 'vault')
         try:
@@ -380,8 +381,9 @@ def scan_conversation_logs() -> list[dict]:
 
     # Also scan vault conversation logs
     from core import vault_bridge
-    if vault_bridge.LOGS_DIR.exists():
-        for md_file in vault_bridge.LOGS_DIR.glob("*.md"):
+    logs_dir = vault_bridge.get_logs_dir()
+    if logs_dir.exists():
+        for md_file in logs_dir.glob("*.md"):
             try:
                 content = md_file.read_text(encoding='utf-8')
                 lines = [l for l in content.split('\n') if l.startswith('**You:**')]

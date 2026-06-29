@@ -156,6 +156,36 @@ export async function deleteModel(name) {
   return res.json()
 }
 
+// ── Storage / Memory Provider ──────────────────────
+export async function getStorageStatus() {
+  const res = await fetch(`${API_URL}/api/providers/storage/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function selectStorageProvider(provider, obsidianPath) {
+  const res = await fetch(`${API_URL}/api/providers/storage/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, obsidian_path: obsidianPath || null }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function checkStoragePath(path) {
+  const res = await fetch(`${API_URL}/api/providers/storage/check-path`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 // Streams newline-delimited JSON progress objects from Ollama's pull API.
 // Calls onProgress(obj) for each line as it arrives.
 export async function pullModel(name, onProgress) {
