@@ -750,3 +750,23 @@ async def models_delete(name: str):
     if not ok:
         raise HTTPException(status_code=400, detail=f"Failed to delete model '{name}'")
     return {"status": "deleted", "name": name}
+
+
+# ── SPA fallback ─────────────────────────────────────────────────────────────
+# Must be the LAST route registered — Starlette matches routes in registration
+# order, so every specific route above (including mounted /assets, /voice-audio)
+# is tried first. This only catches paths nothing else matched, e.g. a browser
+# opening /settings or /models directly — the React app reads the URL itself
+# and renders the right page (see App.jsx).
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def spa_fallback(full_path: str):
+    index = FRONTEND_DIR / "index.html"
+
+    if index.exists():
+        return FileResponse(index, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        })
+
+    return await serve_dashboard()
