@@ -156,6 +156,19 @@ export async function deleteModel(name) {
   return res.json()
 }
 
+// ── OpenClaw ────────────────────────────────────────
+export async function getOpenClawStatus() {
+  const res = await fetch(`${API_URL}/api/openclaw/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function testOpenClaw() {
+  const res = await fetch(`${API_URL}/api/openclaw/test`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 // ── Storage / Memory Provider ──────────────────────
 export async function getStorageStatus() {
   const res = await fetch(`${API_URL}/api/providers/storage/status`)
@@ -211,4 +224,132 @@ export async function pullModel(name, onProgress) {
       try { onProgress(JSON.parse(line)) } catch { /* ignore malformed line */ }
     }
   }
+}
+
+// ── App Settings (Voice, Notifications, Privacy, Automation, Experimental) ──
+export async function getSettingsSection(section) {
+  const res = await fetch(`${API_URL}/api/settings/${section}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function updateSettingsSection(section, updates) {
+  const res = await fetch(`${API_URL}/api/settings/${section}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getPermissionsInfo() {
+  const res = await fetch(`${API_URL}/api/permissions/info`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function testNotification(title, message) {
+  const res = await fetch(`${API_URL}/api/notifications/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, message }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Events ──────────────────────────────────────────
+export async function getEvents(limit = 50, category = null) {
+  const params = new URLSearchParams({ limit })
+  if (category) params.set('category', category)
+  const res = await fetch(`${API_URL}/api/events?${params}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Tasks ───────────────────────────────────────────
+export async function getTasks() {
+  const res = await fetch(`${API_URL}/api/tasks`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createTask(name, status = 'PENDING', type = 'general') {
+  const res = await fetch(`${API_URL}/api/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, status, type }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function updateTask(id, updates) {
+  const res = await fetch(`${API_URL}/api/tasks/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteTask(id) {
+  const res = await fetch(`${API_URL}/api/tasks/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Reminders ───────────────────────────────────────
+export async function getReminders() {
+  const res = await fetch(`${API_URL}/api/reminders`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createReminder(name, dueAt) {
+  const res = await fetch(`${API_URL}/api/reminders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, due_at: dueAt }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteReminder(id) {
+  const res = await fetch(`${API_URL}/api/reminders/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── System Logs ─────────────────────────────────────
+export async function getLogsTail(lines = 200) {
+  const res = await fetch(`${API_URL}/api/logs/tail?lines=${lines}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Developer diagnostics ───────────────────────────
+export async function getDevInfo() {
+  const res = await fetch(`${API_URL}/api/dev/info`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Backup / Restore ────────────────────────────────
+export function getBackupExportUrl() {
+  return `${API_URL}/api/backup/export`
+}
+
+export async function importBackup(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${API_URL}/api/backup/import`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
 }

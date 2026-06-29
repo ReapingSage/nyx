@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { THEMES, BACKGROUND_STYLES } from '../utils/themes.js'
 import { useTheme } from '../utils/themeContext.jsx'
 import {
-  getModelsStatus,
+  getModelsStatus, getModelsList, assignModelRole,
   getStorageStatus, selectStorageProvider, checkStoragePath,
+  getSettingsSection, updateSettingsSection, getPermissionsInfo, testNotification,
+  getEvents, getLogsTail, getDevInfo, getBackupExportUrl, importBackup,
+  getNetworkStatus, getConstellation, getOpenClawStatus, testOpenClaw,
 } from '../services/api.js'
 // useTheme is used both here (main SettingsPage) and inside AppearanceSection
 
@@ -222,15 +225,65 @@ function LivePreviewPanel({ theme }) {
   )
 }
 
+const THEME_PRESET_STORAGE_KEY = 'nyx_saved_theme_preset'
+
 // ── Appearance Section ────────────────────────────────────────
 function AppearanceSection({ currentTheme, onThemeChange, bgStyle, onBgStyleChange }) {
   const { visualPrefs, setVisualPref } = useTheme()
+  const [presetStatus, setPresetStatus] = useState(null)
+  const fileInputRef = useRef(null)
 
   const {
     glowIntensity, panelTransparency, fontScale,
     animLevel, uiDensity, highContrast,
     syncGlobalView, syncMemory, syncNetwork, syncVoice,
   } = visualPrefs
+
+  function flashStatus(msg) {
+    setPresetStatus(msg)
+    setTimeout(() => setPresetStatus(null), 2500)
+  }
+
+  function handleSavePreset() {
+    const preset = { themeId: currentTheme, bgStyle, visualPrefs }
+    localStorage.setItem(THEME_PRESET_STORAGE_KEY, JSON.stringify(preset))
+    flashStatus('Saved')
+  }
+
+  function handleExportPreset() {
+    const preset = { themeId: currentTheme, bgStyle, visualPrefs }
+    const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `nyx-theme-preset-${currentTheme}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    flashStatus('Exported')
+  }
+
+  function handleImportPreset() {
+    fileInputRef.current?.click()
+  }
+
+  async function handleFileChosen(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const preset = JSON.parse(text)
+      if (preset.themeId) onThemeChange(preset.themeId)
+      if (preset.bgStyle) onBgStyleChange(preset.bgStyle)
+      if (preset.visualPrefs) {
+        Object.entries(preset.visualPrefs).forEach(([key, value]) => setVisualPref(key, value))
+      }
+      flashStatus('Imported')
+    } catch {
+      flashStatus('Invalid preset file')
+    } finally {
+      e.target.value = ''
+    }
+  }
 
   const activeTheme = THEMES.find(t => t.id === currentTheme) || THEMES[0]
 
@@ -379,9 +432,15 @@ function AppearanceSection({ currentTheme, onThemeChange, bgStyle, onBgStyleChan
       <div style={{ ...dynPANEL, marginBottom: 0 }}>
         <span style={SEC_TITLE}>Theme Management</span>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          {['Save Current', 'Export Preset', 'Import Preset'].map(label => (
+          <input ref={fileInputRef} type="file" accept="application/json" onChange={handleFileChosen} style={{ display: 'none' }} />
+          {[
+            { label: 'Save Current',  onClick: handleSavePreset },
+            { label: 'Export Preset', onClick: handleExportPreset },
+            { label: 'Import Preset', onClick: handleImportPreset },
+          ].map(({ label, onClick }) => (
             <button
               key={label}
+              onClick={onClick}
               style={{
                 fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 700,
                 letterSpacing: '0.14em', textTransform: 'uppercase',
@@ -393,6 +452,9 @@ function AppearanceSection({ currentTheme, onThemeChange, bgStyle, onBgStyleChan
               onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--color-primary)' }}
             >{label}</button>
           ))}
+          {presetStatus && (
+            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: '#22c55e', letterSpacing: '0.08em' }}>{presetStatus}</span>
+          )}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'Share Tech Mono', fontSize: 8.5, color: '#5E587A', letterSpacing: '0.08em' }}>
             <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e' }}/>
             THEME ACTIVE
@@ -405,27 +467,85 @@ function AppearanceSection({ currentTheme, onThemeChange, bgStyle, onBgStyleChan
 
 // ── AI Routing Section ────────────────────────────────────────
 function AIRoutingSection() {
+  const [installed, setInstalled]     = useState([])
+  const [assignments, setAssignments] = useState({})
+  const [loading, setLoading]         = useState(true)
+  const [automation, setAutomation]   = useState(null)
+  const [experimental, setExperimental] = useState(null)
+
+  const ROLE_LABELS = { main: 'Main AI', coding: 'Coding AI', fast: 'Fast / Light AI' }
+
+  useEffect(() => {
+    getModelsList().then(data => {
+      setInstalled(data.installed || [])
+      setAssignments(data.assignments || {})
+      setLoading(false)
+    }).catch(() => setLoading(false))
+    getSettingsSection('automation').then(setAutomation).catch(() => {})
+    getSettingsSection('experimental').then(setExperimental).catch(() => {})
+  }, [])
+
+  async function handleAssign(role, modelName) {
+    const updated = await assignModelRole(role, modelName)
+    setAssignments(updated)
+  }
+
+  async function handleToggleAutomation(value) {
+    const updated = await updateSettingsSection('automation', { openclaw_enabled: value })
+    setAutomation(updated)
+  }
+
+  async function handleToggleFlagship(value) {
+    const updated = await updateSettingsSection('experimental', { flagship_model_enabled: value })
+    setExperimental(updated)
+  }
+
   return (
     <div style={{ paddingBottom: 24 }}>
       <div style={PANEL}>
         <span style={SEC_TITLE}>Model Configuration</span>
-        {['Primary Model', 'Fallback Model', 'Embedding Model', 'Vision Model', 'Code Model'].map(label => (
-          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
-            <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>{label}</span>
-            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', letterSpacing: '0.06em' }}>— NOT CONFIGURED</span>
+        {loading ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div>
+        ) : installed.length === 0 ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>
+            No models installed yet — head to <span style={{ color: 'var(--color-primary)' }}>Providers → AI Models → Manage</span> to install one.
           </div>
-        ))}
+        ) : (
+          Object.entries(ROLE_LABELS).map(([role, label]) => (
+            <div key={role} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
+              <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>{label}</span>
+              <select
+                value={assignments[role] || ''}
+                onChange={e => handleAssign(role, e.target.value)}
+                style={{
+                  padding: '5px 9px', background: 'rgba(var(--color-bg-rgb), 0.70)',
+                  border: '1px solid rgba(var(--color-primary-rgb), 0.22)', borderRadius: 6,
+                  color: 'var(--color-accent)', fontFamily: 'Share Tech Mono', fontSize: 9.5, cursor: 'pointer',
+                }}
+              >
+                {installed.map(m => (
+                  <option key={m.name} value={m.name} style={{ background: '#050716', color: '#C7A6FF' }}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+          ))
+        )}
         <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 10, background: 'rgba(var(--color-primary-rgb), 0.06)', border: '1px solid rgba(var(--color-primary-rgb), 0.12)' }}>
           <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', lineHeight: 1.7 }}>
-            Connect a provider in <span style={{ color: 'var(--color-primary)' }}>Providers</span> to configure model routing.
+            These are the same role assignments used by the <span style={{ color: 'var(--color-primary)' }}>Model Manager</span> — changing one updates the other.
           </div>
         </div>
       </div>
       <div style={PANEL}>
-        <span style={SEC_TITLE}>Routing Strategy</span>
-        <DropdownControl label="Default Strategy" value="cost" onChange={() => {}} options={[{ value: 'cost', label: 'Cost Optimized' }, { value: 'performance', label: 'Performance First' }, { value: 'balanced', label: 'Balanced' }]} />
-        <ToggleControl label="Auto Fallback"    value={true}  onChange={() => {}} description="Switch model on rate limit or error" />
-        <ToggleControl label="Context Caching"  value={false} onChange={() => {}} description="Cache prompts for repeated calls" />
+        <span style={SEC_TITLE}>Routing Behavior</span>
+        <ToggleControl
+          label="Desktop Automation Routing" value={automation?.openclaw_enabled ?? true}
+          onChange={handleToggleAutomation}
+          description="Route desktop/automation requests to OpenClaw instead of the chat model" />
+        <ToggleControl
+          label="Flagship Model"  value={experimental?.flagship_model_enabled ?? false}
+          onChange={handleToggleFlagship}
+          description="Use the flagship model as the default instead of the main assistant model" />
       </div>
     </div>
   )
@@ -832,26 +952,555 @@ function ProvidersSection({ onNavigate }) {
 
 // ── Performance Section ───────────────────────────────────────
 function PerformanceSection() {
-  const [renderMode,    setRenderMode]    = useState('cinematic')
-  const [shadowQuality, setShadowQuality] = useState('high')
-  const [targetFPS,     setTargetFPS]     = useState(60)
-  const [particles,     setParticles]     = useState(true)
-  const [blurFx,        setBlurFx]        = useState(true)
+  const { visualPrefs, setVisualPref } = useTheme()
+  const {
+    animLevel, targetFPS, particlesEnabled,
+    backdropBlurEnabled, glowEffectsEnabled, scanlineEnabled,
+  } = visualPrefs
 
   return (
     <div style={{ paddingBottom: 24 }}>
       <div style={PANEL}>
         <span style={SEC_TITLE}>Render Quality</span>
-        <DropdownControl label="Render Mode"    value={renderMode}    onChange={setRenderMode}    options={[{ value: 'cinematic', label: 'Cinematic — Full Quality' }, { value: 'balanced', label: 'Balanced — Most Effects' }, { value: 'performance', label: 'Performance — Minimal' }]} />
-        <DropdownControl label="Shadow Quality" value={shadowQuality} onChange={setShadowQuality} options={[{ value: 'high', label: 'High' }, { value: 'medium', label: 'Medium' }, { value: 'off', label: 'Off' }]} />
-        <SliderControl   label="Target FPS"     value={targetFPS}     onChange={setTargetFPS} min={24} max={144} />
+        <DropdownControl
+          label="Render Mode" value={animLevel} onChange={v => setVisualPref('animLevel', v)}
+          options={[
+            { value: 'full',    label: 'Cinematic — Full Animation' },
+            { value: 'reduced', label: 'Balanced — Reduced Motion' },
+            { value: 'minimal', label: 'Performance — Minimal Motion' },
+          ]} />
+        <SliderControl
+          label="Target FPS" value={targetFPS} onChange={v => setVisualPref('targetFPS', v)}
+          min={24} max={144} />
       </div>
       <div style={PANEL}>
         <span style={SEC_TITLE}>Effect Toggles</span>
-        <ToggleControl label="Particle Systems"  value={particles} onChange={setParticles} description="Background particle effects" />
-        <ToggleControl label="Backdrop Blur"     value={blurFx}    onChange={setBlurFx}    description="Panel glassmorphism blur" />
-        <ToggleControl label="Glow Effects"      value={true}      onChange={() => {}}     description="Neon glow on UI elements" />
-        <ToggleControl label="Scan Line Overlay" value={false}     onChange={() => {}}     description="CRT scanline aesthetic" />
+        <ToggleControl
+          label="Particle Systems" value={particlesEnabled}
+          onChange={v => setVisualPref('particlesEnabled', v)}
+          description="Animate the background star/particle field (off = static frame, saves CPU)" />
+        <ToggleControl
+          label="Backdrop Blur" value={backdropBlurEnabled}
+          onChange={v => setVisualPref('backdropBlurEnabled', v)}
+          description="Panel glassmorphism blur (off = opaque panels)" />
+        <ToggleControl
+          label="Glow Effects" value={glowEffectsEnabled}
+          onChange={v => setVisualPref('glowEffectsEnabled', v)}
+          description="Neon glow on UI elements" />
+        <ToggleControl
+          label="Scan Line Overlay" value={scanlineEnabled}
+          onChange={v => setVisualPref('scanlineEnabled', v)}
+          description="CRT scanline aesthetic" />
+      </div>
+    </div>
+  )
+}
+
+// ── Voice & Audio Section ──────────────────────────────────────
+function VoiceSection() {
+  const [settings, setSettings] = useState(null)
+  const [saving, setSaving]     = useState(false)
+
+  useEffect(() => { getSettingsSection('voice').then(setSettings).catch(() => {}) }, [])
+
+  async function update(updates) {
+    setSaving(true)
+    try {
+      setSettings(await updateSettingsSection('voice', updates))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!settings) return <div style={PANEL}><span style={SEC_TITLE}>Voice & Audio</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Voice Pipeline</span>
+        <ToggleControl
+          label="Voice Enabled" value={settings.enabled}
+          onChange={v => update({ enabled: v })}
+          description="Allow NYX to listen and respond by voice" />
+        <DropdownControl
+          label="Voice Mode" value={settings.voice_mode}
+          onChange={v => update({ voice_mode: v })}
+          options={[
+            { value: 'push_to_talk', label: 'Push to Talk' },
+            { value: 'wake_word',    label: 'Wake Word' },
+          ]} />
+        {settings.voice_mode === 'wake_word' && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ marginBottom: 6 }}>
+              <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>Wake Word</span>
+            </div>
+            <input
+              defaultValue={settings.wake_word}
+              onBlur={e => update({ wake_word: e.target.value.trim() || 'nyx' })}
+              style={{
+                width: '100%', padding: '7px 10px', background: 'rgba(var(--color-bg-rgb), 0.70)',
+                border: '1px solid rgba(var(--color-primary-rgb), 0.22)', borderRadius: 7,
+                color: 'var(--color-accent)', fontFamily: 'Share Tech Mono', fontSize: 10, outline: 'none',
+              }}
+            />
+          </div>
+        )}
+      </div>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Text-to-Speech</span>
+        <DropdownControl
+          label="Voice" value={settings.tts_voice}
+          onChange={v => update({ tts_voice: v })}
+          options={[
+            { value: 'en-GB-SoniaNeural', label: 'Sonia (British, composed)' },
+            { value: 'en-IE-EmilyNeural', label: 'Emily (Irish, warm)' },
+            { value: 'en-US-AriaNeural',  label: 'Aria (American, versatile)' },
+            { value: 'en-GB-LibbyNeural', label: 'Libby (British, cool)' },
+          ]} />
+        {saving && <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)' }}>Saving...</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── Notifications Section ──────────────────────────────────────
+function NotificationsSection() {
+  const [settings, setSettings] = useState(null)
+  const [testResult, setTestResult] = useState(null)
+  const [testing, setTesting] = useState(false)
+
+  useEffect(() => { getSettingsSection('notifications').then(setSettings).catch(() => {}) }, [])
+
+  async function update(updates) {
+    setSettings(await updateSettingsSection('notifications', updates))
+  }
+
+  async function sendTest() {
+    setTesting(true)
+    try {
+      const r = await testNotification('NYX', 'This is a test notification from Settings.')
+      setTestResult(r.result)
+    } catch (e) {
+      setTestResult(e.message)
+    } finally {
+      setTesting(false)
+      setTimeout(() => setTestResult(null), 4000)
+    }
+  }
+
+  if (!settings) return <div style={PANEL}><span style={SEC_TITLE}>Notifications</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Notification Preferences</span>
+        <ToggleControl label="Enable Notifications" value={settings.enabled} onChange={v => update({ enabled: v })} description="Master switch for all desktop notifications" />
+        <ToggleControl label="Task Complete" value={settings.task_complete} onChange={v => update({ task_complete: v })} description="Notify when a tracked task finishes" />
+        <ToggleControl label="Errors" value={settings.errors} onChange={v => update({ errors: v })} description="Notify when something goes wrong" />
+        <ToggleControl label="Voice Wake" value={settings.voice_wake} onChange={v => update({ voice_wake: v })} description="Notify when the wake word is detected" />
+        <button
+          onClick={sendTest} disabled={testing}
+          style={{
+            marginTop: 10, fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.12em', textTransform: 'uppercase', color: '#fff',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+            border: 'none', borderRadius: 7, padding: '8px 16px', cursor: 'pointer',
+          }}
+        >{testing ? 'Sending...' : 'Send Test Notification'}</button>
+        {testResult && <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-muted)' }}>{testResult}</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── Privacy Section ─────────────────────────────────────────────
+function PrivacySection() {
+  const [settings, setSettings]   = useState(null)
+  const [permInfo, setPermInfo]   = useState(null)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearing, setClearing]   = useState(false)
+  const [clearResult, setClearResult] = useState(null)
+
+  useEffect(() => {
+    getSettingsSection('privacy').then(setSettings).catch(() => {})
+    getPermissionsInfo().then(setPermInfo).catch(() => {})
+  }, [])
+
+  async function update(updates) {
+    const updated = await updateSettingsSection('privacy', updates)
+    setSettings(updated)
+    getPermissionsInfo().then(setPermInfo).catch(() => {})
+  }
+
+  if (!settings) return <div style={PANEL}><span style={SEC_TITLE}>Privacy</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Action Safety</span>
+        <ToggleControl
+          label="Block Dangerous Actions" value={settings.block_dangerous_actions}
+          onChange={v => update({ block_dangerous_actions: v })}
+          description="Refuse requests that match flagged phrases instead of just warning" />
+        {permInfo && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', marginBottom: 6 }}>FLAGGED PHRASES</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {permInfo.danger_phrases.map(p => (
+                <span key={p} style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-muted)', background: 'rgba(var(--color-primary-rgb),0.08)', border: '1px solid rgba(var(--color-primary-rgb),0.16)', borderRadius: 5, padding: '2px 7px' }}>{p}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Your Data</span>
+        <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+          Clear every saved conversation log. This cannot be undone — back up first in <span style={{ color: 'var(--color-primary)' }}>Providers → Backup</span> if you want a copy.
+        </div>
+        {!confirmClear ? (
+          <button
+            onClick={() => setConfirmClear(true)}
+            style={{ ...{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase' }, color: '#f87171', background: 'none', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 7, padding: '8px 16px', cursor: 'pointer' }}
+          >Clear Conversation History</button>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: '#facc15' }}>Are you sure? This is permanent.</span>
+            <button
+              onClick={async () => {
+                setClearing(true)
+                try {
+                  // No dedicated endpoint for this yet — guard until one exists rather than guessing at one.
+                  setClearResult('Use Providers → Backup to manage data for now.')
+                } finally {
+                  setClearing(false)
+                  setConfirmClear(false)
+                }
+              }}
+              disabled={clearing}
+              style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 700, color: '#fff', background: '#dc2626', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+            >{clearing ? 'Clearing...' : 'Yes, Clear It'}</button>
+            <button onClick={() => setConfirmClear(false)} style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10, color: 'var(--color-text-muted)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.25)', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}>Cancel</button>
+          </div>
+        )}
+        {clearResult && <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)' }}>{clearResult}</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── Memory System Section ───────────────────────────────────────
+function MemorySystemSection() {
+  const [networkStatus, setNetworkStatus] = useState(null)
+  const [constellation, setConstellation] = useState(null)
+
+  const refresh = useCallback(() => {
+    getNetworkStatus().then(setNetworkStatus).catch(() => {})
+    getConstellation().then(setConstellation).catch(() => {})
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const mem = networkStatus?.memory
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Memory Stats</span>
+        {!mem ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+            {[
+              { label: 'Memory Notes',     value: mem.memory_count },
+              { label: 'Conversation Logs', value: mem.conv_log_count },
+              { label: 'Vault Markdown Files', value: mem.vault_md_count },
+              { label: 'Vault Connected',  value: mem.vault_exists ? 'Yes' : 'No' },
+            ].map(s => (
+              <div key={s.label} style={{ padding: '10px 12px', borderRadius: 9, background: 'rgba(8,10,26,0.55)', border: '1px solid rgba(120,90,220,0.16)' }}>
+                <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: 'var(--color-text-disabled)', marginBottom: 4 }}>{s.label.toUpperCase()}</div>
+                <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 18, fontWeight: 700, color: 'var(--color-accent)' }}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={PANEL}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <span style={{ ...SEC_TITLE, marginBottom: 0 }}>Memory Notes</span>
+          <button onClick={refresh} style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700, color: 'var(--color-text-muted)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.25)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer' }}>Refresh</button>
+        </div>
+        {!constellation?.nodes?.length ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>No memory notes yet.</div>
+        ) : (
+          constellation.nodes.slice(0, 12).map(node => (
+            <div key={node.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
+              <span style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: 'var(--color-text-disabled)', textTransform: 'uppercase', width: 70, flexShrink: 0 }}>{node.category}</span>
+              <span style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 11, color: 'var(--color-text-secondary)', flex: 1 }}>{node.label}</span>
+            </div>
+          ))
+        )}
+        <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)' }}>
+          Manage individual notes from the Memory page on the dashboard.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Automation Section ──────────────────────────────────────────
+function AutomationSection() {
+  const [settings, setSettings] = useState(null)
+  const [openclawStatus, setOpenclawStatus] = useState(null)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
+
+  useEffect(() => {
+    getSettingsSection('automation').then(setSettings).catch(() => {})
+    getOpenClawStatus().then(setOpenclawStatus).catch(() => {})
+  }, [])
+
+  async function update(updates) {
+    setSettings(await updateSettingsSection('automation', updates))
+  }
+
+  async function runTest() {
+    setTesting(true)
+    try {
+      const r = await testOpenClaw()
+      setTestResult(JSON.stringify(r))
+    } catch (e) {
+      setTestResult(e.message)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  if (!settings) return <div style={PANEL}><span style={SEC_TITLE}>Automation</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  const ocOnline = openclawStatus?.online || openclawStatus?.connected
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>OpenClaw Desktop Automation</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: ocOnline ? '#22c55e' : '#f87171', boxShadow: `0 0 6px ${ocOnline ? '#22c55e' : '#f87171'}` }} />
+          <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-muted)' }}>{ocOnline ? 'ONLINE' : 'OFFLINE'}</span>
+          <button onClick={runTest} disabled={testing} style={{ marginLeft: 'auto', fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700, color: 'var(--color-primary)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.30)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer' }}>{testing ? 'Testing...' : 'Test Connection'}</button>
+        </div>
+        {testResult && <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8.5, color: 'var(--color-text-disabled)', marginBottom: 10, wordBreak: 'break-all' }}>{testResult}</div>}
+        <ToggleControl
+          label="Enable Automation Routing" value={settings.openclaw_enabled}
+          onChange={v => update({ openclaw_enabled: v })}
+          description="Route desktop/automation requests to OpenClaw instead of the chat model" />
+        <ToggleControl
+          label="Confirm Before Actions" value={settings.confirm_before_actions}
+          onChange={v => update({ confirm_before_actions: v })}
+          description="Require explicit confirmation before running flagged actions" />
+      </div>
+    </div>
+  )
+}
+
+// ── Experimental Section ─────────────────────────────────────────
+function ExperimentalSection() {
+  const [settings, setSettings] = useState(null)
+
+  useEffect(() => { getSettingsSection('experimental').then(setSettings).catch(() => {}) }, [])
+
+  async function update(updates) {
+    setSettings(await updateSettingsSection('experimental', updates))
+  }
+
+  if (!settings) return <div style={PANEL}><span style={SEC_TITLE}>Experimental</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Feature Flags</span>
+        <ToggleControl
+          label="Flagship Model" value={settings.flagship_model_enabled}
+          onChange={v => update({ flagship_model_enabled: v })}
+          description="Route default chat requests to the flagship model instead of the main assistant model" />
+        <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.18)' }}>
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: '#facc15', lineHeight: 1.7 }}>
+            Experimental flags can change behavior in ways that aren't fully tested. Flip them back off if something feels wrong.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Backup Section ────────────────────────────────────────────────
+function BackupSection() {
+  const [importing, setImporting] = useState(false)
+  const [result, setResult] = useState(null)
+  const fileInputRef = useRef(null)
+
+  function handleExport() {
+    window.open(getBackupExportUrl(), '_blank')
+  }
+
+  function handleImportClick() {
+    fileInputRef.current?.click()
+  }
+
+  async function handleFileChosen(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    setResult(null)
+    try {
+      const r = await importBackup(file)
+      setResult(`Restored ${r.files_restored} files.`)
+    } catch (err) {
+      setResult(`Import failed: ${err.message}`)
+    } finally {
+      setImporting(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Export</span>
+        <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+          Download a zip containing your memory vault, conversation logs, and settings.
+        </div>
+        <button
+          onClick={handleExport}
+          style={{
+            fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
+            color: '#fff', background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+            border: 'none', borderRadius: 7, padding: '9px 18px', cursor: 'pointer',
+          }}
+        >Download Backup (.zip)</button>
+      </div>
+
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Restore</span>
+        <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+          Restore from a previously exported backup zip. Existing files with the same name are overwritten.
+        </div>
+        <input ref={fileInputRef} type="file" accept=".zip" onChange={handleFileChosen} style={{ display: 'none' }} />
+        <button
+          onClick={handleImportClick} disabled={importing}
+          style={{
+            fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
+            color: 'var(--color-text-muted)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.25)',
+            borderRadius: 7, padding: '9px 18px', cursor: 'pointer',
+          }}
+        >{importing ? 'Restoring...' : 'Restore from Backup (.zip)'}</button>
+        {result && <div style={{ marginTop: 10, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-muted)' }}>{result}</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── Developer Section ──────────────────────────────────────────────
+function DeveloperSection() {
+  const [info, setInfo] = useState(null)
+  const [showRoutes, setShowRoutes] = useState(false)
+
+  useEffect(() => { getDevInfo().then(setInfo).catch(() => {}) }, [])
+
+  if (!info) return <div style={PANEL}><span style={SEC_TITLE}>Developer</span><div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div></div>
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>System Info</span>
+        {[
+          { label: 'Python Version', value: info.python_version },
+          { label: 'Platform',       value: info.platform },
+          { label: 'AI Provider',    value: info.ai_provider },
+          { label: 'Ollama URL',     value: info.ollama_base_url },
+          { label: 'Vault Path',     value: info.vault_path },
+          { label: 'API Routes',     value: info.route_count },
+        ].map(row => (
+          <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.08)' }}>
+            <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>{row.label}</span>
+            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-accent)', wordBreak: 'break-all', textAlign: 'right', maxWidth: '60%' }}>{row.value}</span>
+          </div>
+        ))}
+      </div>
+      <div style={PANEL}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showRoutes ? 12 : 0 }}>
+          <span style={{ ...SEC_TITLE, marginBottom: 0 }}>API Routes ({info.routes.length})</span>
+          <button onClick={() => setShowRoutes(s => !s)} style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700, color: 'var(--color-primary)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.30)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer' }}>{showRoutes ? 'Hide' : 'Show'}</button>
+        </div>
+        {showRoutes && (
+          <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            {info.routes.map(r => (
+              <div key={r} style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-muted)', padding: '4px 0', borderBottom: '1px solid rgba(var(--color-primary-rgb), 0.06)' }}>{r}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── System Logs Section ────────────────────────────────────────────
+function LogsSection() {
+  const [logData, setLogData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const refresh = useCallback(() => {
+    setLoading(true)
+    getLogsTail(300).then(setLogData).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ ...SEC_TITLE, marginBottom: 0 }}>
+            nyx.log {logData ? `(last ${logData.lines.length} of ${logData.total_lines ?? 0} lines)` : ''}
+          </span>
+          <button onClick={refresh} disabled={loading} style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700, color: 'var(--color-primary)', background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.30)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer' }}>{loading ? 'Loading...' : 'Refresh'}</button>
+        </div>
+        <div style={{
+          background: 'rgba(0,0,0,0.4)', borderRadius: 8, padding: 12, maxHeight: 420, overflowY: 'auto',
+          fontFamily: 'Share Tech Mono', fontSize: 9, color: '#8E86B8', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+        }}>
+          {!logData || logData.lines.length === 0
+            ? 'No log entries yet.'
+            : logData.lines.map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Global View Section ────────────────────────────────────────────
+function GlobalViewSection({ onNavigate }) {
+  const { visualPrefs, setVisualPref } = useTheme()
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Global View Page</span>
+        <ToggleControl
+          label="Theme Sync" value={visualPrefs.syncGlobalView}
+          onChange={v => setVisualPref('syncGlobalView', v)}
+          description="Apply the active theme's colors to the map and globe" />
+        <button
+          onClick={() => onNavigate?.('globalview')}
+          style={{
+            marginTop: 10, fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-primary)',
+            background: 'none', border: '1px solid rgba(var(--color-primary-rgb), 0.30)',
+            borderRadius: 7, padding: '8px 16px', cursor: 'pointer',
+          }}
+        >Open Global View</button>
       </div>
     </div>
   )
@@ -891,11 +1540,21 @@ export default function SettingsPage({ onNavigate }) {
 
   function renderSection() {
     switch (activeSection) {
-      case 'appearance':  return <AppearanceSection currentTheme={themeId} onThemeChange={setThemeId} bgStyle={bgStyle} onBgStyleChange={setBgStyle} />
-      case 'ai-routing':  return <AIRoutingSection />
-      case 'providers':   return <ProvidersSection onNavigate={onNavigate} />
-      case 'performance': return <PerformanceSection />
-      default:            return <ComingSoonSection name={activeCat?.label || activeSection} />
+      case 'appearance':    return <AppearanceSection currentTheme={themeId} onThemeChange={setThemeId} bgStyle={bgStyle} onBgStyleChange={setBgStyle} />
+      case 'ai-routing':    return <AIRoutingSection />
+      case 'providers':     return <ProvidersSection onNavigate={onNavigate} />
+      case 'performance':   return <PerformanceSection />
+      case 'voice':         return <VoiceSection />
+      case 'notifications': return <NotificationsSection />
+      case 'privacy':       return <PrivacySection />
+      case 'memory':        return <MemorySystemSection />
+      case 'automation':    return <AutomationSection />
+      case 'experimental':  return <ExperimentalSection />
+      case 'backup':        return <BackupSection />
+      case 'developer':     return <DeveloperSection />
+      case 'logs':          return <LogsSection />
+      case 'global-view':   return <GlobalViewSection onNavigate={onNavigate} />
+      default:              return <ComingSoonSection name={activeCat?.label || activeSection} />
     }
   }
 

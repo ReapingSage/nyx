@@ -13,6 +13,11 @@ export const DEFAULT_VISUAL_PREFS = {
   syncMemory:        true,     // Memory Constellation follows active theme
   syncNetwork:       true,     // Network Page follows active theme
   syncVoice:         false,    // Voice waveform follows active theme
+  particlesEnabled:  true,     // Background.jsx star/particle field on/off
+  glowEffectsEnabled: true,    // forces --glow-intensity to 0 when off
+  backdropBlurEnabled: true,   // when off, panels go opaque instead of blurred-transparent
+  scanlineEnabled:   false,    // CRT scanline overlay
+  targetFPS:         60,       // caps Background.jsx's animation frame rate
 }
 
 // CSS vars applied to page wrappers when sync is OFF — locks that page to nyx-purple
@@ -48,12 +53,18 @@ export function ThemeProvider({ children }) {
   // Apply CSS vars whenever visual prefs change
   useEffect(() => {
     const root = document.documentElement
-    const { glowIntensity, panelTransparency, fontScale, animLevel } = visualPrefs
+    const {
+      glowIntensity, panelTransparency, fontScale, animLevel,
+      glowEffectsEnabled, backdropBlurEnabled, scanlineEnabled, targetFPS,
+    } = visualPrefs
 
-    // 75 is "baseline" → multiplier of 1.0
-    root.style.setProperty('--glow-intensity', (glowIntensity / 75).toFixed(3))
-    root.style.setProperty('--panel-opacity',  (panelTransparency / 100).toFixed(3))
+    // 75 is "baseline" → multiplier of 1.0. Glow Effects toggle hard-overrides to 0.
+    root.style.setProperty('--glow-intensity', glowEffectsEnabled ? (glowIntensity / 75).toFixed(3) : '0')
+    // Backdrop Blur toggle: opaque (1) when off, otherwise the slider value
+    root.style.setProperty('--panel-opacity',  backdropBlurEnabled ? (panelTransparency / 100).toFixed(3) : '1')
     root.style.setProperty('--font-scale',     (fontScale / 100).toFixed(3))
+    root.style.setProperty('--scanline-opacity', scanlineEnabled ? '1' : '0')
+    root.style.setProperty('--target-fps', String(targetFPS))
 
     const speedMap = { full: '1', reduced: '0.5', minimal: '0.05' }
     root.style.setProperty('--anim-scale', speedMap[animLevel] ?? '1')
@@ -62,6 +73,10 @@ export function ThemeProvider({ children }) {
     visualPrefs.panelTransparency,
     visualPrefs.fontScale,
     visualPrefs.animLevel,
+    visualPrefs.glowEffectsEnabled,
+    visualPrefs.backdropBlurEnabled,
+    visualPrefs.scanlineEnabled,
+    visualPrefs.targetFPS,
   ])
 
   const setThemeId = (id) => {

@@ -39,30 +39,7 @@ export const PAGE_PATHS = {
   globalview: '/global-view',
 }
 
-export const MOCK_TASKS = [
-  { id: 1, name: 'Market Analysis',    status: 'IN PROGRESS' },
-  { id: 2, name: 'Content Generation', status: 'IN PROGRESS' },
-  { id: 3, name: 'Email Automation',   status: 'SCHEDULED' },
-  { id: 4, name: 'Social Media Sync',  status: 'IN PROGRESS' },
-  { id: 5, name: 'Financial Report',   status: 'PENDING' },
-]
-
-export const MOCK_REMINDERS = [
-  { id: 1, name: 'Client Meeting',       date: 'Tomorrow 10:00 AM' },
-  { id: 2, name: 'Product Launch',       date: 'June 2, 2025' },
-  { id: 3, name: 'Subscription Renewal', date: 'June 5, 2025' },
-]
-
-export const MOCK_EVENTS = [
-  { id: 1, name: 'Team Sync',        date: 'May 29  09:00 AM' },
-  { id: 2, name: 'Project Deadline', date: 'May 30  11:59 PM' },
-  { id: 3, name: 'Strategy Call',    date: 'June 1  03:00 PM' },
-]
-
-export const MOCK_SYSTEM = { cpu: 78, memory: 62, disk: 91, network: 33 }
-
-export const MOCK_INTELLIGENCE = {
-  dataPoints: '1.2M', opportunities: 3, optimalTime: '01:30 AM',
-}
+// Initial placeholder shown only until the first real /api/system response arrives.
+export const MOCK_SYSTEM = { cpu: 0, memory: 0, disk: 0, network: 0 }
 
 export const API_URL = 'http://localhost:8000'

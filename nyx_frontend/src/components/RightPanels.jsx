@@ -1,6 +1,15 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { MOCK_EVENTS, MOCK_INTELLIGENCE, API_URL } from '../utils/constants.js'
+import { API_URL } from '../utils/constants.js'
+import { getNetworkStatus, getEvents } from '../services/api.js'
+
+function formatEventTime(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  } catch {
+    return iso
+  }
+}
 
 const PANEL_STYLE = {
   background: 'var(--color-surface)',
@@ -91,7 +100,26 @@ function GlobeThumbnail() {
 }
 
 export default function RightPanels({ visible, onOpenGlobalView }) {
-  const [hovered, setHovered] = useState(false)
+  const [hovered, setHovered]   = useState(false)
+  const [memStats, setMemStats] = useState(null)
+  const [events, setEvents]     = useState([])
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const status = await getNetworkStatus()
+        setMemStats(status.memory)
+      } catch {}
+      try {
+        const e = await getEvents(6)
+        setEvents(e.events || [])
+      } catch {}
+    }
+    load()
+    const id = setInterval(load, 15000)
+    return () => clearInterval(id)
+  }, [])
+
   if (!visible) return null
 
   return (
@@ -138,23 +166,29 @@ export default function RightPanels({ visible, onOpenGlobalView }) {
       {/* Nyx Intelligence */}
       <div style={PANEL_STYLE} className="panel-anim">
         <span style={TITLE_STYLE}>NYX Intelligence</span>
-        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', lineHeight: 2.0 }}>
-          <div>Analyzed <span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>{MOCK_INTELLIGENCE.dataPoints}</span> data points.</div>
-          <div><span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>{MOCK_INTELLIGENCE.opportunities}</span> opportunities detected.</div>
-          <div style={{ marginTop: 2 }}>
-            Optimal time to act:{' '}
-            <span style={{ color: 'var(--color-accent)', fontFamily: 'Share Tech Mono', fontSize: 10 }}>
-              {MOCK_INTELLIGENCE.optimalTime}
-            </span>
+        {!memStats ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>Loading...</div>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', lineHeight: 2.0 }}>
+            <div>Tracking <span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>{memStats.memory_count}</span> memory notes.</div>
+            <div><span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>{memStats.conv_log_count}</span> conversation logs saved.</div>
+            <div style={{ marginTop: 2 }}>
+              Vault status:{' '}
+              <span style={{ color: memStats.vault_exists ? '#22c55e' : '#f87171', fontFamily: 'Share Tech Mono', fontSize: 10 }}>
+                {memStats.vault_exists ? 'CONNECTED' : 'NOT FOUND'}
+              </span>
+            </div>
           </div>
-        </div>
-        <button style={{
-          marginTop: 10,
-          fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 600,
-          letterSpacing: '0.16em', textTransform: 'uppercase',
-          color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-          transition: 'color 0.2s',
-        }}
+        )}
+        <button
+          onClick={() => onOpenGlobalView?.()}
+          style={{
+            marginTop: 10,
+            fontFamily: 'Rajdhani, sans-serif', fontSize: 10, fontWeight: 600,
+            letterSpacing: '0.16em', textTransform: 'uppercase',
+            color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+            transition: 'color 0.2s',
+          }}
           onMouseEnter={e => e.target.style.color = 'var(--color-accent)'}
           onMouseLeave={e => e.target.style.color = 'var(--color-primary)'}
         >
@@ -162,10 +196,12 @@ export default function RightPanels({ visible, onOpenGlobalView }) {
         </button>
       </div>
 
-      {/* Upcoming Events */}
+      {/* Recent Events */}
       <div style={PANEL_STYLE} className="panel-anim">
-        <span style={TITLE_STYLE}>Upcoming Events</span>
-        {MOCK_EVENTS.map(ev => (
+        <span style={TITLE_STYLE}>Recent Events</span>
+        {events.length === 0 ? (
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>No events yet</div>
+        ) : events.map(ev => (
           <div key={ev.id} style={{
             display: 'flex', alignItems: 'flex-start', gap: 10,
             padding: '7px 0', borderBottom: '1px solid rgba(100,75,200,0.10)',
@@ -175,10 +211,10 @@ export default function RightPanels({ visible, onOpenGlobalView }) {
               border: '1px solid rgba(130,95,240,0.28)',
               background: 'rgba(100,70,200,0.10)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
-            }}>📅</div>
+            }}>{ev.status === 'warning' ? '⚠' : '●'}</div>
             <div>
-              <div style={{ fontSize: 11, color: 'var(--color-text-primary)' }}>{ev.name}</div>
-              <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginTop: 2 }}>{ev.date}</div>
+              <div style={{ fontSize: 11, color: 'var(--color-text-primary)' }}>{ev.title}</div>
+              <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: 'var(--color-text-disabled)', marginTop: 2 }}>{formatEventTime(ev.timestamp)}</div>
             </div>
           </div>
         ))}

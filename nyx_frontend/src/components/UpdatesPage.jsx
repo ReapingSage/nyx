@@ -11,6 +11,7 @@ import {
   Activity, RefreshCw, Lock, GitBranch, Volume2, Brain,
   Shuffle, Layers, Server, ChevronDown,
 } from 'lucide-react'
+import { getEvents, getNetworkStatus, getSystemStats } from '../services/api.js'
 
 // ─────────────────────────────────────────────────────────────
 // CATEGORY METADATA
@@ -34,99 +35,33 @@ const STATUS_DOT = {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FEED EVENT DATA
-// Each entry is a real-feeling operational record from Nyx history.
+// FEED EVENT DATA — fetched live from /api/events (core/event_log.py)
 // ─────────────────────────────────────────────────────────────
 
-const MIN = 60 * 1000
-const HR  = 60 * MIN
-const DAY = 24 * HR
-
-function ev(id, category, title, description, ago, status = 'ok', source = '') {
-  return { id, category, title, description, ts: Date.now() - ago, status, source }
+// Maps core/event_log.py's free-form lowercase categories to this page's
+// fixed display categories (CAT, above). Real backend events come through
+// getEvents() — nothing here is fabricated.
+const CATEGORY_MAP = {
+  voice: 'VOICE', memory: 'MEMORY', worker: 'WORKER',
+  provider: 'PROVIDER', model: 'PROVIDER', security: 'SECURITY',
+  ai: 'AI', chat: 'AI', tasks: 'TASK', reminders: 'TASK',
+  settings: 'SYSTEM', system: 'SYSTEM', backup: 'SYSTEM',
+  automation: 'WORKER', network: 'SYSTEM',
 }
 
-const ALL_EVENTS = [
-  ev('e01', 'VOICE',    'Voice pipeline calibrated',
-     'Microphone sensitivity and noise suppression thresholds adjusted for current environment.',
-     2*MIN, 'ok', 'voice.pipeline'),
+const STATUS_MAP = { ok: 'ok', warning: 'warn', error: 'err' }
 
-  ev('e02', 'MEMORY',   'Memory sync completed',
-     'Vault synchronized — 1,248 new embeddings indexed into constellation.',
-     5*MIN, 'ok', 'memory.vault'),
-
-  ev('e03', 'WORKER',   'Worker agent deployed',
-     'Code interpreter agent initialized and listening on internal dispatch queue.',
-     12*MIN, 'ok', 'worker.agent'),
-
-  ev('e04', 'PROVIDER', 'Provider connection verified',
-     'Ollama (Llama 3.1) heartbeat confirmed. Routing latency within threshold.',
-     18*MIN, 'ok', 'provider.router'),
-
-  ev('e05', 'SECURITY', 'Security scan completed',
-     'No anomalies detected. Permission manifest verified clean across all agents.',
-     23*MIN, 'ok', 'security.scan'),
-
-  ev('e06', 'AI',       'Local model cache optimized',
-     'Freed 1.3 GB VRAM. Inference latency reduced by ~18% on Llama 3.1 requests.',
-     26*MIN, 'ok', 'model.cache'),
-
-  ev('e07', 'TASK',     'Task queue processing resumed',
-     '4 pending tasks dispatched after provider reconnect. No data loss.',
-     32*MIN, 'ok', 'task.queue'),
-
-  ev('e08', 'AI',       'Routing fallback triggered',
-     'OpenClaw unresponsive — request automatically re-routed to local Ollama.',
-     60*MIN, 'warn', 'model.router'),
-
-  ev('e09', 'SYSTEM',   'Orb transition smoothing adjusted',
-     'Spring physics damping recalibrated for mobile viewport. Visual lag eliminated.',
-     2*HR, 'ok', 'ui.orb'),
-
-  ev('e10', 'TASK',     'Dynamic task queue initialized',
-     'State machine active — QUEUED → RUNNING lifecycle with pause/resume operational.',
-     3*HR, 'ok', 'task.state'),
-
-  ev('e11', 'MEMORY',   'Vault sync connection repaired',
-     'Bridge to Obsidian vault re-established after a 14-minute interruption.',
-     5*HR, 'ok', 'vault.bridge'),
-
-  ev('e12', 'SYSTEM',   'Mobile particle optimization applied',
-     'Canvas particle count reduced on low-DPR displays. Frame rate stabilized at 60.',
-     8*HR, 'ok', 'ui.background'),
-
-  ev('e13', 'MEMORY',   'Constellation indexing algorithm improved',
-     'Spatial node clustering updated. Query latency reduced by 34% on dense graphs.',
-     1*DAY, 'ok', 'memory.index'),
-
-  ev('e14', 'SECURITY', 'Desktop automation permissions updated',
-     'OpenClaw elevated permissions scoped to approved application manifest only.',
-     2*DAY, 'ok', 'security.perms'),
-
-  ev('e15', 'AI',       'Local model integration completed',
-     'Ollama provider fully wired into NyxAgent pipeline. Streaming responses enabled.',
-     3*DAY, 'ok', 'model.provider'),
-
-  ev('e16', 'PROVIDER', 'Provider routing fallback enabled',
-     'Cascade: OpenClaw → Ollama → cached response. Failover path tested and verified.',
-     5*DAY, 'ok', 'provider.fallback'),
-
-  ev('e17', 'VOICE',    'Wake word listener calibrated',
-     'Sensitivity threshold set to 0.72. False positive rate reduced below 0.3%.',
-     7*DAY, 'ok', 'voice.wake'),
-
-  ev('e18', 'VOICE',    'Voice response pipeline stabilized',
-     'End-to-end latency from wake detection to TTS output optimized to ~1.8s.',
-     10*DAY, 'ok', 'voice.tts'),
-
-  ev('e19', 'SYSTEM',   'Voice system initialized',
-     'Whisper model loaded into memory. Audio capture pipeline connected to NyxAgent.',
-     14*DAY, 'ok', 'voice.init'),
-
-  ev('e20', 'AI',       'NyxAgent core instantiated',
-     'Session history, vault bridge, and model router all verified operational.',
-     21*DAY, 'ok', 'agent.core'),
-]
+function transformEvent(e) {
+  return {
+    id: e.id,
+    category: CATEGORY_MAP[e.category] || 'SYSTEM',
+    title: e.title,
+    description: e.detail || '',
+    ts: new Date(e.timestamp).getTime(),
+    status: STATUS_MAP[e.status] || 'ok',
+    source: e.category,
+  }
+}
 
 const CATEGORIES = ['ALL', ...Object.keys(CAT)]
 
@@ -134,29 +69,8 @@ const CATEGORIES = ['ALL', ...Object.keys(CAT)]
 // SYSTEM STATUS DATA
 // ─────────────────────────────────────────────────────────────
 
-const STATUS_ITEMS = [
-  { label:'Ollama (Llama 3.1)',  status:'active',      note:'responding',    color:'#22c55e' },
-  { label:'OpenClaw Agent',      status:'standby',     note:'idle',          color:'#facc15' },
-  { label:'Whisper v3',          status:'loaded',      note:'calibrated',    color:'#22c55e' },
-  { label:'Vector Search',       status:'indexed',     note:'1,248 nodes',   color:'#22c55e' },
-  { label:'Voice Pipeline',      status:'active',      note:'listening',     color:'#22c55e' },
-  { label:'Vault Bridge',        status:'synced',      note:'2 min ago',     color:'#22c55e' },
-]
-
-const INSIGHT_ITEMS = [
-  {
-    title: 'Workflow pattern detected',
-    body:  'Document and PDF tasks cluster between 20:00–23:00. Scheduling vault sync post-peak may reduce indexing collisions.',
-    icon:  <Activity size={12}/>,
-    color: '#a874ff',
-  },
-  {
-    title: 'GPU offload available',
-    body:  'Ollama inference averaging 2.1s. Enabling GPU offload layer could reduce latency to ~0.8s for most requests.',
-    icon:  <Cpu size={12}/>,
-    color: '#4DC8FF',
-  },
-]
+// STATUS_ITEMS and INSIGHT_ITEMS are no longer static — SystemStatusPanel and
+// InsightsPanel below build these from real /api/network/status + /api/system data.
 
 // ─────────────────────────────────────────────────────────────
 // HELPERS
@@ -328,7 +242,33 @@ function FilterPills({ active, onChange }) {
 // SYSTEM STATUS PANEL
 // ─────────────────────────────────────────────────────────────
 
+function buildStatusItems(networkStatus) {
+  if (!networkStatus) return []
+  const { providers, memory, voice } = networkStatus
+  const dot = (online) => (online ? '#22c55e' : '#f87171')
+
+  return [
+    { label: 'Ollama', note: providers?.ollama?.online ? `${providers.ollama.latency_ms ?? '–'}ms` : 'offline', color: dot(providers?.ollama?.online) },
+    { label: 'OpenClaw Agent', note: providers?.openclaw?.online ? 'connected' : 'offline', color: dot(providers?.openclaw?.online) },
+    { label: 'Vault Bridge', note: memory?.vault_exists ? `${memory.vault_md_count} files` : 'not found', color: dot(memory?.vault_exists) },
+    { label: 'Memory Notes', note: `${memory?.memory_count ?? 0} tracked`, color: '#22c55e' },
+    { label: 'Voice Pipeline', note: voice?.enabled ? 'enabled' : 'disabled', color: dot(voice?.enabled) },
+    { label: 'Internet', note: networkStatus.internet?.online ? `${networkStatus.internet.latency_ms ?? '–'}ms` : 'offline', color: dot(networkStatus.internet?.online) },
+  ]
+}
+
 function SystemStatusPanel() {
+  const [networkStatus, setNetworkStatus] = useState(null)
+
+  useEffect(() => {
+    const load = () => getNetworkStatus().then(setNetworkStatus).catch(() => {})
+    load()
+    const id = setInterval(load, 15000)
+    return () => clearInterval(id)
+  }, [])
+
+  const statusItems = buildStatusItems(networkStatus)
+
   return (
     <div style={{
       background:     'rgba(6,5,24,0.72)',
@@ -354,13 +294,15 @@ function SystemStatusPanel() {
       </div>
 
       <div style={{ padding:'6px 0' }}>
-        {STATUS_ITEMS.map((item, i) => (
+        {statusItems.length === 0 ? (
+          <div style={{ padding: '10px 14px', fontFamily: 'Share Tech Mono, monospace', fontSize: 9, color: 'var(--color-text-disabled)' }}>Loading...</div>
+        ) : statusItems.map((item, i) => (
           <div
             key={i}
             style={{
               display:'flex', alignItems:'center', justifyContent:'space-between',
               padding:'6px 14px',
-              borderBottom: i < STATUS_ITEMS.length - 1
+              borderBottom: i < statusItems.length - 1
                 ? '1px solid rgba(var(--color-primary-rgb),0.05)' : 'none',
             }}
           >
@@ -395,7 +337,64 @@ function SystemStatusPanel() {
 // INSIGHTS PANEL
 // ─────────────────────────────────────────────────────────────
 
+// Builds real, conditional insights from actual system/network data —
+// no fabricated text. Returns fewer items (or none) if there's nothing to say.
+function buildInsights(sysStats, networkStatus) {
+  const insights = []
+
+  if (sysStats?.gpu && !sysStats.gpu.available) {
+    insights.push({
+      title: 'No GPU detected', icon: <Cpu size={12}/>, color: '#FF9555',
+      body: 'Inference is running on CPU only. Responses from larger models will be slower than on a GPU-equipped machine.',
+    })
+  } else if (sysStats?.gpu?.available) {
+    insights.push({
+      title: 'GPU active', icon: <Cpu size={12}/>, color: '#4DC8FF',
+      body: `${sysStats.gpu.name} — ${sysStats.gpu.usage}% utilization, ${sysStats.gpu.vram_used_mb}/${sysStats.gpu.vram_total_mb} MB VRAM in use.`,
+    })
+  }
+
+  if (networkStatus?.memory) {
+    const { memory_count, conv_log_count } = networkStatus.memory
+    if (conv_log_count > 50) {
+      insights.push({
+        title: 'Conversation history growing', icon: <Database size={12}/>, color: '#a874ff',
+        body: `${conv_log_count} conversation logs stored. Consider exporting a backup from Settings → Providers → Backup.`,
+      })
+    } else {
+      insights.push({
+        title: 'Memory tracking active', icon: <Activity size={12}/>, color: '#a874ff',
+        body: `${memory_count} memory notes and ${conv_log_count} conversation logs tracked so far.`,
+      })
+    }
+  }
+
+  if (networkStatus?.providers?.ollama && !networkStatus.providers.ollama.online) {
+    insights.push({
+      title: 'Ollama unreachable', icon: <Zap size={12}/>, color: '#f87171',
+      body: `Could not reach Ollama at ${networkStatus.providers.ollama.base_url}. Chat requests will fail until it's running.`,
+    })
+  }
+
+  return insights
+}
+
 function InsightsPanel() {
+  const [sysStats, setSysStats] = useState(null)
+  const [networkStatus, setNetworkStatus] = useState(null)
+
+  useEffect(() => {
+    const load = () => {
+      getSystemStats().then(setSysStats).catch(() => {})
+      getNetworkStatus().then(setNetworkStatus).catch(() => {})
+    }
+    load()
+    const id = setInterval(load, 20000)
+    return () => clearInterval(id)
+  }, [])
+
+  const insights = buildInsights(sysStats, networkStatus)
+
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
       <div style={{ display:'flex', alignItems:'center', gap:7, padding:'0 2px' }}>
@@ -410,7 +409,9 @@ function InsightsPanel() {
         <div style={{ flex:1, height:1, background:'rgba(var(--color-primary-rgb),0.08)'}}/>
       </div>
 
-      {INSIGHT_ITEMS.map((ins, i) => (
+      {insights.length === 0 ? (
+        <div style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 9.5, color: 'var(--color-text-disabled)', padding: '4px 2px' }}>Nothing to report.</div>
+      ) : insights.map((ins, i) => (
         <motion.div
           key={i}
           initial={{ opacity:0, y:6 }}
@@ -426,8 +427,8 @@ function InsightsPanel() {
           <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
             <div style={{
               width:22, height:22, borderRadius:5, flexShrink:0,
-              background:`rgba(${ins.color === '#a874ff' ? '168,116,255' : '77,200,255'},0.09)`,
-              border:`1px solid rgba(${ins.color === '#a874ff' ? '168,116,255' : '77,200,255'},0.18)`,
+              background:`${ins.color}18`,
+              border:`1px solid ${ins.color}40`,
               display:'flex', alignItems:'center', justifyContent:'center',
               color: ins.color,
             }}>
@@ -461,6 +462,7 @@ export default function UpdatesPage() {
   const [activeFilter,  setActiveFilter]  = useState('ALL')
   const [visibleCount,  setVisibleCount]  = useState(10)
   const [tick,          setTick]          = useState(0)
+  const [allEvents,     setAllEvents]     = useState([])
 
   // Re-render timestamps every 60s
   useEffect(() => {
@@ -468,9 +470,22 @@ export default function UpdatesPage() {
     return () => clearInterval(id)
   }, [])
 
+  // Pull real events from core/event_log.py — refreshed every 10s
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const { events } = await getEvents(100)
+        setAllEvents((events || []).map(transformEvent))
+      } catch {}
+    }
+    load()
+    const id = setInterval(load, 10_000)
+    return () => clearInterval(id)
+  }, [])
+
   const filtered = activeFilter === 'ALL'
-    ? ALL_EVENTS
-    : ALL_EVENTS.filter(e => e.category === activeFilter)
+    ? allEvents
+    : allEvents.filter(e => e.category === activeFilter)
 
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
@@ -480,7 +495,7 @@ export default function UpdatesPage() {
     setVisibleCount(10)
   }, [])
 
-  const recentCount = ALL_EVENTS.filter(e => Date.now() - e.ts < 60*60*1000).length
+  const recentCount = allEvents.filter(e => Date.now() - e.ts < 60*60*1000).length
 
   return (
     <div style={{
@@ -537,7 +552,7 @@ export default function UpdatesPage() {
           fontFamily:'Share Tech Mono,monospace', fontSize:8.5,
           color:'rgba(var(--color-primary-rgb),0.32)', letterSpacing:'0.10em',
         }}>
-          {ALL_EVENTS.length} EVENTS · LIVE
+          {allEvents.length} EVENTS · LIVE
         </span>
       </div>
 

@@ -78,9 +78,14 @@ def route(user_input: str) -> tuple[str, str]:
     text = user_input.lower()
     words = set(text.split())
 
+    from core import app_settings
+    automation_enabled = app_settings.get_section("automation").get("openclaw_enabled", True)
+
     # Check desktop/automation keywords — route to OpenClaw layer
     if any(kw in text for kw in DESKTOP_KEYWORDS):
-        return "openclaw", "desktop/automation action detected"
+        if automation_enabled:
+            return "openclaw", "desktop/automation action detected"
+        return config.MODEL_MAIN, "desktop action detected but automation is disabled in Settings"
 
     # Creative requests — check before coding so "description" doesn't hit coder
     if any(kw in text for kw in CREATIVE_KEYWORDS):
@@ -98,8 +103,12 @@ def route(user_input: str) -> tuple[str, str]:
     if words & REASON_KEYWORDS or any(kw in text for kw in REASON_KEYWORDS):
         return config.MODEL_REASON, "reasoning/planning keywords detected"
 
-    # Flagship model — used as default when enabled
-    if config.FLAGSHIP_ENABLED:
+    # Flagship model — config.py sets the build-time default; the
+    # Experimental settings toggle overrides it at runtime.
+    flagship_enabled = app_settings.get_section("experimental").get(
+        "flagship_model_enabled", config.FLAGSHIP_ENABLED
+    )
+    if flagship_enabled:
         return config.MODEL_FLAGSHIP, "flagship model active"
 
     # Default: main assistant brain
