@@ -28,6 +28,51 @@ PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}"
 START_POLL_ATTEMPTS = 10
 START_POLL_INTERVAL = 0.5
+LOCK_FILE = os.path.join(ROOT_DIR, "tray", ".tray.lock")
+
+
+def _is_tray_app_process(pid: int) -> bool:
+    try:
+        cmdline = " ".join(psutil.Process(pid).cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return "tray_app.py" in cmdline
+
+
+def _another_instance_running() -> bool:
+    if not os.path.exists(LOCK_FILE):
+        return False
+    try:
+        with open(LOCK_FILE) as f:
+            pid = int(f.read().strip())
+    except (ValueError, OSError):
+        return False
+    return pid != os.getpid() and psutil.pid_exists(pid) and _is_tray_app_process(pid)
+
+
+def _write_lock():
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def _clear_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
+def _notify_already_running():
+    message = (
+        "NYX is already running.\n\n"
+        "Look in your system tray near the clock - click the ^ arrow "
+        "to see hidden icons if you don't see it right away."
+    )
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, message, "NYX", 0x40)
+    else:
+        print(message)
 
 
 def make_icon_image() -> Image.Image:
@@ -200,7 +245,15 @@ class NyxTrayApp:
 
 
 def main():
-    NyxTrayApp().run()
+    if _another_instance_running():
+        _notify_already_running()
+        return
+
+    _write_lock()
+    try:
+        NyxTrayApp().run()
+    finally:
+        _clear_lock()
 
 
 if __name__ == "__main__":

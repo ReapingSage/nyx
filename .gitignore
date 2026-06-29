@@ -33,3 +33,6 @@ memory/model_assignments.json
 
 # Per-machine storage provider selection (e.g. connected Obsidian vault path)
 memory/storage_config.json
+
+# Tray app single-instance lock (runtime state, not for repo)
+tray/.tray.lock
