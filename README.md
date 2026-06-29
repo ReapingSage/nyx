@@ -14,6 +14,7 @@ NYX is a local-first AI desktop assistant. It runs entirely on your own machine 
 | [Ollama](https://ollama.com/download) | Runs AI models locally — see [MODEL_SETUP.md](MODEL_SETUP.md) |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Optional — run NYX in containers instead of natively |
 | [WSL2](https://learn.microsoft.com/windows/wsl/install) | Windows only, required by Docker Desktop |
+| [Obsidian](https://obsidian.md) | **Not required.** NYX's memory system stores notes as plain `.md` files in `NYX_VAULT/` and creates that folder itself — Obsidian is just an optional, nicer way to browse and graph those notes. Any text editor works too. |
 
 ## Installation
 
