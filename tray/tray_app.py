@@ -1,17 +1,24 @@
 """
 tray/tray_app.py — NYX System Tray Application
-Run with: python tray/tray_app.py
+Run with: pythonw tray/tray_app.py   (or: python tray/tray_app.py)
 
 Controls the NYX backend (ui.server:app via uvicorn) from the Windows
 system tray — start/stop the service, open the dashboard, settings,
 and Model Manager in your browser.
+
+Detects NYX whether it was started by this tray app, in a terminal, or
+any other way — Start won't double-launch a second instance on the same
+port, and Stop can shut down an instance it didn't itself start.
 """
 
 import sys
 import os
+import socket
 import subprocess
+import time
 import webbrowser
 
+import psutil
 import pystray
 from PIL import Image, ImageDraw
 
@@ -19,6 +26,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = "127.0.0.1"
 PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}"
+START_POLL_ATTEMPTS = 10
+START_POLL_INTERVAL = 0.5
 
 
 def make_icon_image() -> Image.Image:
@@ -29,6 +38,58 @@ def make_icon_image() -> Image.Image:
     draw.ellipse((4, 4, size - 4, size - 4), fill=(124, 58, 237, 255))
     draw.ellipse((18, 16, size - 18, size - 28), fill=(230, 210, 255, 220))
     return img
+
+
+def _port_is_open() -> bool:
+    try:
+        with socket.create_connection((HOST, PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _find_uvicorn_pids() -> set[int]:
+    """Find any process running NYX's uvicorn server, however it was started."""
+    pids = set()
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info["cmdline"] or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if "uvicorn" in cmdline and "ui.server:app" in cmdline:
+            pids.add(proc.info["pid"])
+    return pids
+
+
+def _find_pid_on_port() -> int | None:
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == PORT and conn.status == psutil.CONN_LISTEN:
+                return conn.pid
+    except (psutil.AccessDenied, PermissionError):
+        pass
+    return None
+
+
+def _terminate_tree(pid: int):
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+
+    procs = proc.children(recursive=True) + [proc]
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.NoSuchProcess:
+            pass
+
+    _, alive = psutil.wait_procs(procs, timeout=10)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
 
 
 class NyxTrayApp:
@@ -44,11 +105,13 @@ class NyxTrayApp:
     # ── Backend process control ────────────────────────────
 
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        if self.process is not None and self.process.poll() is None:
+            return True
+        return _port_is_open()
 
     def start_service(self, _icon=None, _item=None):
         if self.is_running():
-            return
+            return  # already running — whether we started it or not
 
         self.process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "ui.server:app", "--host", HOST, "--port", str(PORT)],
@@ -58,16 +121,28 @@ class NyxTrayApp:
         self._refresh()
 
     def stop_service(self, _icon=None, _item=None):
-        if not self.is_running():
-            return
+        if self.process is not None and self.process.poll() is None:
+            _terminate_tree(self.process.pid)
+            self.process = None
+        else:
+            # Not something we started ourselves — find and stop whatever is
+            # bound to our port (e.g. a terminal-launched instance).
+            pids = _find_uvicorn_pids()
+            port_pid = _find_pid_on_port()
+            if port_pid:
+                pids.add(port_pid)
+            for pid in pids:
+                _terminate_tree(pid)
 
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-        self.process = None
         self._refresh()
+
+    def _wait_until_ready(self):
+        """After starting, give the server a moment to actually bind the port
+        before opening a browser tab to it."""
+        for _ in range(START_POLL_ATTEMPTS):
+            if _port_is_open():
+                return
+            time.sleep(START_POLL_INTERVAL)
 
     def _refresh(self):
         self.icon.title = f"NYX — {'Running' if self.is_running() else 'Stopped'}"
@@ -78,16 +153,19 @@ class NyxTrayApp:
     def open_dashboard(self, _icon=None, _item=None):
         if not self.is_running():
             self.start_service()
+            self._wait_until_ready()
         webbrowser.open(BASE_URL)
 
     def open_settings(self, _icon=None, _item=None):
         if not self.is_running():
             self.start_service()
+            self._wait_until_ready()
         webbrowser.open(f"{BASE_URL}/settings")
 
     def open_model_manager(self, _icon=None, _item=None):
         if not self.is_running():
             self.start_service()
+            self._wait_until_ready()
         webbrowser.open(f"{BASE_URL}/models")
 
     # ── Menu ─────────────────────────────────────────────────
@@ -110,7 +188,10 @@ class NyxTrayApp:
         )
 
     def exit_app(self, _icon=None, _item=None):
-        self.stop_service()
+        # Only stop the service if this tray instance was the one running it —
+        # exiting the tray shouldn't kill a server you started yourself in a terminal.
+        if self.process is not None and self.process.poll() is None:
+            self.stop_service()
         self.icon.stop()
 
     def run(self):
