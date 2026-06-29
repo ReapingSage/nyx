@@ -1158,8 +1158,9 @@ export default function SystemsPage() {
     setFeed(boot)
     fetchSys()
     fetchAll()
-    const sysT = setInterval(fetchSys,  3500)
-    const allT = setInterval(fetchAll, 12000)
+    // laptop-lite: slower polling reduces psutil/GPU CPU overhead
+    const sysT = setInterval(fetchSys,  8000)
+    const allT = setInterval(fetchAll, 20000)
     const hbT  = setInterval(() => {
       const hb = [
         () => addEvent('INFO',   'System tick · uptime nominal'),

@@ -281,7 +281,8 @@ async def reset_memory():
 @app.get("/api/system")
 async def system_stats():
     try:
-        cpu = psutil.cpu_percent(interval=0.5)
+        # laptop-lite: non-blocking sample (interval=None) instead of a 0.5s blocking sleep
+        cpu = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         net = psutil.net_io_counters()

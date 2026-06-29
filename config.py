@@ -21,10 +21,12 @@ OPENCLAW_PORT:  int = int(os.getenv("OPENCLAW_PORT", "18789"))
 OPENCLAW_TOKEN: str = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 
 # ── Model roster ─────────────────────────────────────────
-MODEL_MAIN     = "qwen2.5:14b"
+# laptop-lite branch: smaller models for limited RAM/CPU machines.
+# Same roles as main — just lighter weight per role.
+MODEL_MAIN     = "llama3.2:3b"
 MODEL_FAST     = "llama3.2:3b"
-MODEL_CODER    = "deepseek-coder:6.7b"
-MODEL_REASON   = "qwen2.5:7b"
+MODEL_CODER    = "qwen2.5-coder:3b"
+MODEL_REASON   = "llama3.2:3b"
 MODEL_FLAGSHIP   = "llama3.3"
 FLAGSHIP_ENABLED = False
 
