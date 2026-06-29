@@ -91,7 +91,17 @@ Once dependencies are installed, you can run NYX from the system tray instead of
 python tray/tray_app.py
 ```
 
-This gives you Start/Stop controls and quick links to the dashboard, Settings, and Model Manager, right from your taskbar.
+This gives you Start/Stop controls and quick links to the dashboard, Settings, and Model Manager, right from your taskbar. It detects NYX whether it's running because the tray app started it, you ran it manually in a terminal, or it's running in Docker on the same port — Start won't launch a duplicate, and Stop can shut down whichever one is running.
+
+#### Add it to your Start Menu / Desktop
+
+To launch NYX like any other installed app (double-click, no terminal):
+
+```
+powershell -ExecutionPolicy Bypass -File tray\install_shortcut.ps1
+```
+
+This creates a "NYX" shortcut in your Start Menu and on your Desktop, using `pythonw.exe` so no console window appears. Right-click either shortcut afterward to pin it to Start or the taskbar if you want it there too. Windows only.
 
 ## Memory & Storage
 
