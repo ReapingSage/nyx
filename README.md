@@ -14,7 +14,7 @@ NYX is a local-first AI desktop assistant. It runs entirely on your own machine 
 | [Ollama](https://ollama.com/download) | Runs AI models locally — see [MODEL_SETUP.md](MODEL_SETUP.md) |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Optional — run NYX in containers instead of natively |
 | [WSL2](https://learn.microsoft.com/windows/wsl/install) | Windows only, required by Docker Desktop |
-| [Obsidian](https://obsidian.md) | **Not required.** NYX's memory system stores notes as plain `.md` files in `NYX_VAULT/` and creates that folder itself — Obsidian is just an optional, nicer way to browse and graph those notes. Any text editor works too. |
+| [Obsidian](https://obsidian.md) | **Not required.** See [Memory & Storage](#memory--storage) below — Obsidian is one of two storage options, not a dependency. |
 
 ## Installation
 
@@ -93,6 +93,46 @@ python tray/tray_app.py
 
 This gives you Start/Stop controls and quick links to the dashboard, Settings, and Model Manager, right from your taskbar.
 
+## Memory & Storage
+
+NYX remembers things — facts about you, and a log of every conversation. Where those notes physically live is a "storage provider," switchable anytime from **Settings → Providers → Storage / Memory**, with no restart needed.
+
+### NYX Local Storage (default)
+
+NYX creates a folder called `NYX_VAULT/` inside the project the moment you send your first message — nothing to configure. Inside:
+
+```
+NYX_VAULT/
+├── Memory/     # facts NYX has learned, one file per topic (preferences.md, identity.md, etc.)
+└── Logs/       # one markdown file per day — the full transcript of every conversation
+```
+
+Pick this if you don't already use a note-taking app. It just works.
+
+### Obsidian integration
+
+If you already keep notes in [Obsidian](https://obsidian.md), point NYX at that vault instead. NYX creates the same `Memory/` and `Logs/` subfolders *inside it*, so your NYX notes sit alongside your other notes with full access to Obsidian's graph view, linking, and search.
+
+NYX only ever touches `<your vault>/Memory` and `<your vault>/Logs` — nothing else in your vault is read, written, or deleted.
+
+To connect one:
+1. **Settings → Providers → Storage / Memory**
+2. Paste the path to an existing vault folder
+3. Click **Check & Connect** — NYX verifies the folder exists
+4. Confirm the switch in the dialog that appears
+
+Obsidian the app doesn't need to be installed for this to work — it's just what you'd use to *browse* the vault afterward. NYX talks to the folder directly on disk.
+
+### Switching providers safely
+
+Switching is a redirect for **future** notes — it is not a migration or a merge:
+
+- Nothing already saved in your current provider is moved, copied, or deleted
+- NYX stops reading from the old location and starts reading/writing the new one
+- Switching back later picks up exactly where that provider's notes left off, untouched
+
+NYX shows a confirmation dialog every time you switch, spelling out exactly what will happen before it happens — so you always know which provider is active and what switching will (and won't) do.
+
 ## Hardware recommendations
 
 | | Minimum | Recommended |
@@ -141,12 +181,13 @@ nyx/
 ├── app.py              # CLI entry point
 ├── config.py           # configuration (models, env vars)
 ├── brain/              # AI provider integrations + routing
-├── core/               # agent orchestration, memory, model manager
+├── core/               # agent orchestration, memory, model manager, storage_provider.py, vault_bridge.py
 ├── ui/server.py         # FastAPI backend
 ├── nyx_frontend/        # React dashboard
 ├── tools/               # desktop/web automation tools
 ├── tray/                # Windows system tray app
 ├── voice/               # speech-to-text / text-to-speech
+├── NYX_VAULT/            # default memory storage (created automatically, see Memory & Storage)
 └── MODEL_SETUP.md       # manual Ollama model setup guide
 ```
 
