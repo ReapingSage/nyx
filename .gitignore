@@ -27,3 +27,6 @@ memory/constellation.json
 # Local Claude Code settings (machine-specific)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Per-machine model role assignments (varies per install)
+memory/model_assignments.json

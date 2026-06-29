@@ -9,6 +9,7 @@ http://127.0.0.1:8000
 """
 
 import sys
+import json
 import uuid
 import random
 import platform
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import psutil
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,6 +31,7 @@ sys.path.insert(0, str(ROOT_DIR))
 import config
 from core.agent import NyxAgent
 from core.constellation_manager import constellation
+from core import model_manager
 from brain import openclaw_provider
 from utils.logger import get_logger
 
@@ -691,3 +693,60 @@ async def net_reconnect():
     _net_log("system", "Systems Reconnected",
              "External connections restored. Normal operations resumed.")
     return {"status": "reconnected", "offline_mode": False}
+
+
+# ── Model Manager ────────────────────────────────────────────────────────────
+
+class ModelAssignRequest(BaseModel):
+    role: str
+    model: str
+
+
+class ModelPullRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/models/status")
+async def models_status():
+    return model_manager.get_ollama_status()
+
+
+@app.get("/api/models/list")
+async def models_list():
+    return {
+        "installed":   model_manager.list_installed_models(),
+        "assignments": model_manager.get_role_assignments(),
+    }
+
+
+@app.get("/api/models/recommended")
+async def models_recommended(profile: str = "desktop"):
+    return {"profile": profile, "missing": model_manager.missing_recommended(profile)}
+
+
+@app.post("/api/models/assign")
+async def models_assign(req: ModelAssignRequest):
+    try:
+        return model_manager.set_role_assignment(req.role, req.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/models/pull")
+async def models_pull(req: ModelPullRequest):
+    def event_stream():
+        try:
+            for progress in model_manager.pull_model(req.name):
+                yield json.dumps(progress) + "\n"
+        except Exception as e:
+            yield json.dumps({"status": "error", "error": str(e)}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.delete("/api/models/{name}")
+async def models_delete(name: str):
+    ok = model_manager.delete_model(name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Failed to delete model '{name}'")
+    return {"status": "deleted", "name": name}
