@@ -64,6 +64,7 @@ def _load_system_prompt() -> str:
             with open(_NYX_MD_PATH, "r", encoding="utf-8") as f:
                 content = f.read().strip()
             if content:
+                content = content.replace("{USER_NAME}", USER_NAME).replace("{NYX_TITLE}", NYX_TITLE)
                 return content
         except IOError as e:
             print(f"[Nyx] Warning: could not read brain/nyx.md — {e}")

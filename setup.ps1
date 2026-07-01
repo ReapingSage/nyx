@@ -274,7 +274,39 @@ if ($hasOllama) {
 
 
 # =============================================================================
-#  STEP 6 - Shortcuts
+#  STEP 6 - Personalise NYX
+# =============================================================================
+Write-Header "Personalising NYX..."
+Write-Divider
+
+$EnvFile = Join-Path $NYX_DIR ".env"
+
+# Only ask if .env does not already have a USER_NAME set
+$alreadyNamed = (Test-Path $EnvFile) -and ((Get-Content $EnvFile -Raw) -match "USER_NAME=\S")
+if (-not $alreadyNamed) {
+    Write-Host ""
+    Write-Host "  NYX needs to know your name so it addresses you correctly." -ForegroundColor White
+    $userName = Read-Host "  Your first name"
+    if (-not $userName) { $userName = "Master" }
+
+    $envContent = "USER_NAME=$userName`r`nNYX_TITLE=Master`r`n"
+    if (Test-Path $EnvFile) {
+        # Append without overwriting other existing settings
+        $existing = Get-Content $EnvFile -Raw
+        $existing = $existing -replace "USER_NAME=.*(\r?\n)?", ""
+        $existing = $existing -replace "NYX_TITLE=.*(\r?\n)?", ""
+        $envContent = $existing.TrimEnd() + "`r`n" + $envContent
+    }
+    Set-Content -Path $EnvFile -Value $envContent -Encoding utf8
+    Write-OK "NYX will address you as $userName."
+} else {
+    Write-OK "Identity already configured in .env"
+}
+
+Write-Host ""
+
+# =============================================================================
+#  STEP 7 - Shortcuts
 # =============================================================================
 Write-Header "Creating shortcuts..."
 Write-Divider
