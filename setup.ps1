@@ -48,7 +48,7 @@ if ($IsInsideRepo) {
     $NYX_DIR = $ScriptDir
     Write-OK "Already inside the NYX repo at: $NYX_DIR"
 } else {
-    Write-Step "NYX not found here — will clone to: $INSTALL_DIR"
+    Write-Step "NYX not found here - will clone to: $INSTALL_DIR"
     $NYX_DIR = $INSTALL_DIR
 }
 
@@ -127,7 +127,7 @@ if ($pyVer) {
 }
 
 if (-not $hasNode) {
-    Write-Warn "Node.js missing — the dashboard UI cannot be built. NYX will still run but you won't see the interface."
+    Write-Warn "Node.js missing - the dashboard UI cannot be built. NYX will still run but you won't see the interface."
 }
 
 
@@ -224,7 +224,7 @@ if ($hasOllama) {
     }
 
     if ($modelToPull) {
-        Write-Step "Pulling $modelToPull — this may take several minutes..."
+        Write-Step "Pulling $modelToPull - this may take several minutes..."
         Write-Host "  (Download progress will appear below)" -ForegroundColor DarkGray
         Write-Host ""
         ollama pull $modelToPull
@@ -234,10 +234,10 @@ if ($hasOllama) {
             Write-Warn "Model pull may have failed. You can pull manually later: ollama pull $modelToPull"
         }
     } else {
-        Write-OK "Skipped model download — using your existing models."
+        Write-OK "Skipped model download - using your existing models."
     }
 } else {
-    Write-Warn "Ollama not found — NYX cannot process AI requests until Ollama is installed and a model is pulled."
+    Write-Warn "Ollama not found - NYX cannot process AI requests until Ollama is installed and a model is pulled."
     Write-Warn "Install from: https://ollama.com/download  then run: ollama pull llama3.2:3b"
 }
 
@@ -284,7 +284,7 @@ if ($launch -notmatch '^[Nn]') {
         Start-Process python -ArgumentList "`"$TrayScript`"" -WorkingDirectory $NYX_DIR -WindowStyle Hidden
     }
     Write-Host ""
-    Write-OK "NYX launched — check your system tray."
+    Write-OK "NYX launched - check your system tray."
 }
 
 Write-Host ""
