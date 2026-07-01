@@ -10,6 +10,23 @@ $NYX_REPO    = "https://github.com/ReapingSage/nyx.git"
 $NYX_VERSION = "v1.16"
 $INSTALL_DIR = "$env:USERPROFILE\NYX"
 
+# Ask which version to install
+Write-Host ""
+Write-Host "  Which version do you want?" -ForegroundColor White
+Write-Host ""
+Write-Host "  [1] Standard  - Full models, all features  (needs 16GB+ RAM)" -ForegroundColor Cyan
+Write-Host "  [2] Lite      - Smaller models, less RAM   (good for most PCs)" -ForegroundColor Cyan
+Write-Host ""
+$versionChoice = Read-Host "  Choose [1/2]"
+if ($versionChoice.Trim() -eq "2") {
+    $NYX_BRANCH = "laptop-lite"
+    Write-Host "  Using Lite version (smaller models, lower RAM usage)." -ForegroundColor DarkGray
+} else {
+    $NYX_BRANCH = "main"
+    Write-Host "  Using Standard version." -ForegroundColor DarkGray
+}
+Write-Host ""
+
 # ---------- helpers ----------------------------------------------------------
 function Write-Header  { param([string]$t) Write-Host "" ; Write-Host "  $t" -ForegroundColor Cyan }
 function Write-Step    { param([string]$t) Write-Host "  > $t" -ForegroundColor White }
@@ -164,8 +181,8 @@ if (-not $IsInsideRepo) {
             Write-Fail "Git is required to download NYX. Install Git and re-run setup."
             pause; exit 1
         }
-        Write-Step "Cloning $NYX_REPO ..."
-        git clone $NYX_REPO $NYX_DIR
+        Write-Step "Cloning $NYX_REPO (branch: $NYX_BRANCH)..."
+        git clone --branch $NYX_BRANCH $NYX_REPO $NYX_DIR
         if ($LASTEXITCODE -ne 0) {
             Write-Fail "Clone failed. Check your internet connection and that the repo URL is accessible."
             pause; exit 1

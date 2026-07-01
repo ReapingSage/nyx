@@ -32,8 +32,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = "127.0.0.1"
 PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}"
-START_POLL_ATTEMPTS = 10
-START_POLL_INTERVAL = 0.5
+START_POLL_ATTEMPTS = 30
+START_POLL_INTERVAL = 1.0
 LOCK_FILE = os.path.join(ROOT_DIR, "tray", ".tray.lock")
 
 
@@ -280,6 +280,14 @@ class NyxTrayApp:
     def _run_tray(self):
         """Runs on the thread pywebview spawns for us via webview.start()."""
         threading.Thread(target=self._refresh_loop, daemon=True).start()
+        # Give the window a moment to render then bring it to front.
+        # On slower machines the window can open behind other apps.
+        def _bring_to_front():
+            time.sleep(1.5)
+            if self.window is not None:
+                self.window.restore()
+                self.window.show()
+        threading.Thread(target=_bring_to_front, daemon=True).start()
         self.icon.run()
 
     def run(self):
