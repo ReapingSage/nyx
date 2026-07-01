@@ -306,19 +306,23 @@ async def system_stats():
         gpu_info = {"available": False, "usage": None, "name": None,
                     "vram_used_mb": None, "vram_total_mb": None, "temp_c": None}
         try:
-            import GPUtil
-            gpus = GPUtil.getGPUs()
-            if gpus:
-                g = gpus[0]
+            result = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                parts = [p.strip() for p in result.stdout.strip().split(",")]
                 gpu_info = {
                     "available":     True,
-                    "usage":         round(g.load * 100, 1),
-                    "name":          g.name,
-                    "vram_used_mb":  round(g.memoryUsed),
-                    "vram_total_mb": round(g.memoryTotal),
-                    "temp_c":        g.temperature,
+                    "name":          parts[0],
+                    "vram_used_mb":  int(parts[1]),
+                    "vram_total_mb": int(parts[2]),
+                    "temp_c":        int(parts[3]),
+                    "usage":         int(parts[4]),
                 }
-        except ImportError:
+        except Exception:
             pass
 
         freq = psutil.cpu_freq()
@@ -716,7 +720,9 @@ class ModelPullRequest(BaseModel):
 
 @app.get("/api/models/status")
 async def models_status():
-    return model_manager.get_ollama_status()
+    status = model_manager.get_ollama_status()
+    status["profile"] = model_manager.get_profile()
+    return status
 
 
 @app.get("/api/models/list")

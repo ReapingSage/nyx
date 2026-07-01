@@ -234,7 +234,7 @@ export default function ModelManagerPage() {
   const [status, setStatus]           = useState(null)
   const [installed, setInstalled]     = useState([])
   const [assignments, setAssignments] = useState({})
-  const [profile, setProfile]         = useState('desktop')
+  const [profile, setProfile]         = useState('desktop') // overwritten by server on first load
   const [recommended, setRecommended] = useState([])
   const [loading, setLoading]         = useState(true)
   const [checking, setChecking]       = useState(false)
@@ -248,10 +248,13 @@ export default function ModelManagerPage() {
     try {
       const st = await getModelsStatus()
       setStatus(st)
+      // Use server-reported profile on first load so laptop-lite users get lite recommendations
+      const activeProfile = st.profile || profile
+      if (activeProfile !== profile) setProfile(activeProfile)
       if (st.running) {
         const [list, recs] = await Promise.all([
           getModelsList(),
-          getRecommendedModels(profile),
+          getRecommendedModels(activeProfile),
         ])
         setInstalled(list.installed || [])
         setAssignments(list.assignments || {})
