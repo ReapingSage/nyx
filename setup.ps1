@@ -1,47 +1,46 @@
-# ============================================================
-#  NYX Setup Installer
-#  Run once on a new machine to go from zero to running.
+# NYX Setup Installer
+# Run once on a new machine to go from zero to running.
 #
-#  Usage (from PowerShell):
-#    powershell -ExecutionPolicy Bypass -File setup.ps1
+# Usage (from PowerShell):
+#   powershell -ExecutionPolicy Bypass -File setup.ps1
 #
-#  Or just double-click setup.bat — it handles the rest.
-# ============================================================
+# Or just double-click setup.bat
 
-$NYX_REPO     = "https://github.com/ReapingSage/nyx.git"
-$NYX_VERSION  = "v1.15"
-$INSTALL_DIR  = "$env:USERPROFILE\NYX"
+$NYX_REPO    = "https://github.com/ReapingSage/nyx.git"
+$NYX_VERSION = "v1.16"
+$INSTALL_DIR = "$env:USERPROFILE\NYX"
 
-# ── Colours ──────────────────────────────────────────────────────────────────
-function Write-Header  { param([string]$t) Write-Host "`n  $t" -ForegroundColor Cyan }
+# ---------- helpers ----------------------------------------------------------
+function Write-Header  { param([string]$t) Write-Host "" ; Write-Host "  $t" -ForegroundColor Cyan }
 function Write-Step    { param([string]$t) Write-Host "  > $t" -ForegroundColor White }
-function Write-OK      { param([string]$t) Write-Host "  [OK] $t" -ForegroundColor Green }
-function Write-Warn    { param([string]$t) Write-Host "  [!!] $t" -ForegroundColor Yellow }
-function Write-Fail    { param([string]$t) Write-Host "  [X]  $t" -ForegroundColor Red }
-function Write-Divider { Write-Host ("  " + ("-" * 58)) -ForegroundColor DarkGray }
+function Write-OK      { param([string]$t) Write-Host "  [OK]  $t" -ForegroundColor Green }
+function Write-Warn    { param([string]$t) Write-Host "  [!!]  $t" -ForegroundColor Yellow }
+function Write-Fail    { param([string]$t) Write-Host "  [X]   $t" -ForegroundColor Red }
+function Write-Divider { Write-Host "  ------------------------------------------------------------" -ForegroundColor DarkGray }
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+# ---------- banner -----------------------------------------------------------
 Clear-Host
 Write-Host ""
-Write-Host "  ███╗   ██╗██╗   ██╗██╗  ██╗" -ForegroundColor Magenta
-Write-Host "  ████╗  ██║╚██╗ ██╔╝╚██╗██╔╝" -ForegroundColor Magenta
-Write-Host "  ██╔██╗ ██║ ╚████╔╝  ╚███╔╝ " -ForegroundColor Magenta
-Write-Host "  ██║╚██╗██║  ╚██╔╝   ██╔██╗ " -ForegroundColor Magenta
-Write-Host "  ██║ ╚████║   ██║   ██╔╝ ██╗" -ForegroundColor Magenta
-Write-Host "  ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝" -ForegroundColor Magenta
-Write-Host ""
-Write-Host "  Local AI Desktop Assistant  -  $NYX_VERSION" -ForegroundColor DarkGray
-Write-Host "  Setup Installer for Windows 10/11" -ForegroundColor DarkGray
-Write-Divider
+Write-Host "  +----------------------------------------------------------+" -ForegroundColor Magenta
+Write-Host "  |                                                          |" -ForegroundColor Magenta
+Write-Host "  |    ___  _____  ___   _____  ___   ____   ___  ___       |" -ForegroundColor Magenta
+Write-Host "  |   /   ||_   _||   \ |_   _|/   \ |    \ /   |/   \      |" -ForegroundColor Magenta
+Write-Host "  |  |  | |  | |  | |) |  | | | O | |  D  |  | |  O  |     |" -ForegroundColor Magenta
+Write-Host "  |   \___/  |_|  |___/   |_|  \___/ |____/ \___|\___/      |" -ForegroundColor Magenta
+Write-Host "  |                                                          |" -ForegroundColor Magenta
+Write-Host "  |   Local AI Desktop Assistant  ($NYX_VERSION)              |" -ForegroundColor Magenta
+Write-Host "  |   Setup Installer for Windows 10/11                     |" -ForegroundColor Magenta
+Write-Host "  |                                                          |" -ForegroundColor Magenta
+Write-Host "  +----------------------------------------------------------+" -ForegroundColor Magenta
 Write-Host ""
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 0 — Figure out where we are                       ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 0 - Figure out where we are
+# =============================================================================
 Write-Header "Locating NYX..."
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $IsInsideRepo = Test-Path (Join-Path $ScriptDir "ui\server.py")
 
 if ($IsInsideRepo) {
@@ -53,9 +52,9 @@ if ($IsInsideRepo) {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  HELPER — install a winget package if not on PATH       ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  HELPER - install a winget package if the command is not on PATH
+# =============================================================================
 function Install-Prereq {
     param(
         [string]$Name,
@@ -99,16 +98,16 @@ function Install-Prereq {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 1 — Prerequisites                                 ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 1 - Prerequisites
+# =============================================================================
 Write-Header "Checking prerequisites..."
 Write-Divider
 
-$hasGit    = Install-Prereq -Name "Git"    -Command "git"    -WingetId "Git.Git"              -FallbackUrl "https://git-scm.com/download/win"
-$hasPython = Install-Prereq -Name "Python" -Command "python" -WingetId "Python.Python.3.11"   -FallbackUrl "https://www.python.org/downloads/"
-$hasNode   = Install-Prereq -Name "Node.js"-Command "node"   -WingetId "OpenJS.NodeJS.LTS"    -FallbackUrl "https://nodejs.org"
-$hasOllama = Install-Prereq -Name "Ollama" -Command "ollama" -WingetId "Ollama.Ollama"        -FallbackUrl "https://ollama.com/download"
+$hasGit    = Install-Prereq -Name "Git"     -Command "git"    -WingetId "Git.Git"            -FallbackUrl "https://git-scm.com/download/win"
+$hasPython = Install-Prereq -Name "Python"  -Command "python" -WingetId "Python.Python.3.11" -FallbackUrl "https://www.python.org/downloads/"
+$hasNode   = Install-Prereq -Name "Node.js" -Command "node"   -WingetId "OpenJS.NodeJS.LTS"  -FallbackUrl "https://nodejs.org"
+$hasOllama = Install-Prereq -Name "Ollama"  -Command "ollama" -WingetId "Ollama.Ollama"      -FallbackUrl "https://ollama.com/download"
 
 if (-not $hasPython) {
     Write-Fail "Python is required and could not be installed. Exiting."
@@ -118,29 +117,31 @@ if (-not $hasPython) {
 # Verify Python is 3.9+
 $pyVer = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
 if ($pyVer) {
-    $major, $minor = $pyVer -split '\.' | ForEach-Object { [int]$_ }
+    $parts = $pyVer -split '\.'
+    $major = [int]$parts[0]
+    $minor = [int]$parts[1]
     if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 9)) {
-        Write-Fail "Python $pyVer found but NYX requires 3.9+. Please upgrade."
+        Write-Fail "Python $pyVer found but NYX requires 3.9 or higher. Please upgrade."
         pause; exit 1
     }
-    Write-OK "Python $pyVer"
+    Write-OK "Python $pyVer - OK"
 }
 
 if (-not $hasNode) {
-    Write-Warn "Node.js missing - the dashboard UI cannot be built. NYX will still run but you won't see the interface."
+    Write-Warn "Node.js missing - the dashboard UI cannot be built. NYX will still run but you will not see the interface."
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 2 — Clone the repo (if not already inside it)     ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 2 - Clone the repo (if not already inside it)
+# =============================================================================
 if (-not $IsInsideRepo) {
     Write-Header "Downloading NYX..."
     Write-Divider
 
     if (Test-Path $NYX_DIR) {
         Write-Warn "$NYX_DIR already exists."
-        $ans = Read-Host "  Re-use it (update via git pull)? [Y/n]"
+        $ans = Read-Host "  Re-use it and update via git pull? [Y/n]"
         if ($ans -notmatch '^[Nn]') {
             Write-Step "Pulling latest changes..."
             git -C $NYX_DIR pull
@@ -161,9 +162,9 @@ if (-not $IsInsideRepo) {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 3 — Python dependencies                           ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 3 - Python dependencies
+# =============================================================================
 Write-Header "Installing Python packages..."
 Write-Divider
 
@@ -178,9 +179,9 @@ if ($LASTEXITCODE -ne 0) {
 Write-OK "Python packages installed."
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 4 — Build the frontend                            ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 4 - Build the frontend
+# =============================================================================
 if ($hasNode) {
     Write-Header "Building dashboard UI..."
     Write-Divider
@@ -200,19 +201,19 @@ if ($hasNode) {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 5 — Ollama model selection                        ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 5 - Ollama model selection
+# =============================================================================
 if ($hasOllama) {
     Write-Header "Setting up AI model..."
     Write-Divider
     Write-Host ""
     Write-Host "  NYX needs at least one Ollama model to talk to." -ForegroundColor White
     Write-Host ""
-    Write-Host "  [1] Lightweight  (llama3.2:3b   ~  2 GB) - Fast, any PC"    -ForegroundColor Cyan
-    Write-Host "  [2] Standard     (qwen2.5:7b    ~  5 GB) - Balanced"         -ForegroundColor Cyan
-    Write-Host "  [3] Full quality (qwen2.5:14b   ~ 10 GB) - Best, needs 16GB+ RAM" -ForegroundColor Cyan
-    Write-Host "  [4] Skip         (I already have models installed)"            -ForegroundColor DarkGray
+    Write-Host "  [1] Lightweight  (llama3.2:3b   ~  2 GB) - Fast, works on any PC"   -ForegroundColor Cyan
+    Write-Host "  [2] Standard     (qwen2.5:7b    ~  5 GB) - Balanced"                 -ForegroundColor Cyan
+    Write-Host "  [3] Full quality (qwen2.5:14b   ~ 10 GB) - Best, needs 16GB+ RAM"   -ForegroundColor Cyan
+    Write-Host "  [4] Skip         (I already have models installed)"                   -ForegroundColor DarkGray
     Write-Host ""
     $modelChoice = Read-Host "  Choose [1/2/3/4]"
 
@@ -242,9 +243,9 @@ if ($hasOllama) {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  STEP 6 — Shortcuts                                     ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  STEP 6 - Shortcuts
+# =============================================================================
 Write-Header "Creating shortcuts..."
 Write-Divider
 
@@ -257,16 +258,17 @@ if (Test-Path $ShortcutScript) {
 }
 
 
-# ╔══════════════════════════════════════════════════════════╗
-# ║  DONE                                                   ║
-# ╚══════════════════════════════════════════════════════════╝
+# =============================================================================
+#  DONE
+# =============================================================================
 Write-Host ""
 Write-Divider
 Write-Host ""
 Write-Host "  NYX is ready." -ForegroundColor Green
 Write-Host ""
 Write-Host "  To launch:  Double-click the NYX shortcut on your Desktop" -ForegroundColor White
-Write-Host "            or run:  pythonw $(Join-Path $NYX_DIR 'tray\tray_app.py')" -ForegroundColor DarkGray
+$TrayPath = Join-Path $NYX_DIR 'tray\tray_app.py'
+Write-Host "          or run:  pythonw $TrayPath" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  NYX will appear in your system tray (bottom-right corner)." -ForegroundColor White
 Write-Host "  Right-click the tray icon to open the dashboard." -ForegroundColor White
@@ -277,7 +279,8 @@ Write-Host ""
 $launch = Read-Host "  Launch NYX now? [Y/n]"
 if ($launch -notmatch '^[Nn]') {
     $TrayScript = Join-Path $NYX_DIR "tray\tray_app.py"
-    $PythonW = (Get-Command python -ErrorAction SilentlyContinue).Source -replace "python\.exe$", "pythonw.exe"
+    $PythonExe  = (Get-Command python -ErrorAction SilentlyContinue).Source
+    $PythonW    = $PythonExe -replace "python\.exe$", "pythonw.exe"
     if (Test-Path $PythonW) {
         Start-Process $PythonW -ArgumentList "`"$TrayScript`"" -WorkingDirectory $NYX_DIR -WindowStyle Hidden
     } else {
