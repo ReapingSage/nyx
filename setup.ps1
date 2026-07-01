@@ -114,18 +114,31 @@ if (-not $hasPython) {
     pause; exit 1
 }
 
-# Verify Python is 3.9+
-$pyVer = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-if ($pyVer) {
-    $parts = $pyVer -split '\.'
-    $major = [int]$parts[0]
-    $minor = [int]$parts[1]
-    if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 9)) {
-        Write-Fail "Python $pyVer found but NYX requires 3.9 or higher. Please upgrade."
-        pause; exit 1
-    }
-    Write-OK "Python $pyVer - OK"
+# Resolve which Python command actually works (bypasses Microsoft Store alias)
+$PY_CMD = $null
+foreach ($cmd in @("py", "python", "python3")) {
+    try {
+        $ver = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+        if ($ver -match '^\d+\.\d+$') { $PY_CMD = $cmd; break }
+    } catch {}
 }
+
+if (-not $PY_CMD) {
+    Write-Fail "Python is installed but not responding. Windows may have an App Execution Alias blocking it."
+    Write-Fail "Fix: Settings > Apps > Advanced app settings > App execution aliases"
+    Write-Fail "     Turn OFF python.exe and python3.exe, then re-run this installer."
+    pause; exit 1
+}
+
+$pyVer = & $PY_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+$parts = $pyVer -split '\.'
+$major = [int]$parts[0]
+$minor = [int]$parts[1]
+if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 9)) {
+    Write-Fail "Python $pyVer found but NYX requires 3.9 or higher. Please upgrade."
+    pause; exit 1
+}
+Write-OK "Python $pyVer via '$PY_CMD' - OK"
 
 if (-not $hasNode) {
     Write-Warn "Node.js missing - the dashboard UI cannot be built. NYX will still run but you will not see the interface."
@@ -170,8 +183,8 @@ Write-Divider
 
 $ReqFile = Join-Path $NYX_DIR "requirements.txt"
 Write-Step "pip install -r requirements.txt"
-python -m pip install --upgrade pip --quiet
-python -m pip install -r $ReqFile
+& $PY_CMD -m pip install --upgrade pip --quiet
+& $PY_CMD -m pip install -r $ReqFile
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "pip install failed. See errors above."
     pause; exit 1
@@ -279,12 +292,12 @@ Write-Host ""
 $launch = Read-Host "  Launch NYX now? [Y/n]"
 if ($launch -notmatch '^[Nn]') {
     $TrayScript = Join-Path $NYX_DIR "tray\tray_app.py"
-    $PythonExe  = (Get-Command python -ErrorAction SilentlyContinue).Source
-    $PythonW    = $PythonExe -replace "python\.exe$", "pythonw.exe"
+    $PythonExe  = (Get-Command $PY_CMD -ErrorAction SilentlyContinue).Source
+    $PythonW    = $PythonExe -replace "python.*\.exe$", "pythonw.exe"
     if (Test-Path $PythonW) {
         Start-Process $PythonW -ArgumentList "`"$TrayScript`"" -WorkingDirectory $NYX_DIR -WindowStyle Hidden
     } else {
-        Start-Process python -ArgumentList "`"$TrayScript`"" -WorkingDirectory $NYX_DIR -WindowStyle Hidden
+        Start-Process $PY_CMD -ArgumentList "`"$TrayScript`"" -WorkingDirectory $NYX_DIR -WindowStyle Hidden
     }
     Write-Host ""
     Write-OK "NYX launched - check your system tray."
