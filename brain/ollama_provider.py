@@ -40,6 +40,10 @@ def ask(model: str, messages: list) -> str:
         "model":    model,
         "messages": messages,
         "stream":   False,
+        # Keep the model loaded between requests — Ollama's default unloads
+        # it after ~5 min idle, making the next reply pay a full cold-load
+        # (many seconds on larger models, on lite hardware too).
+        "keep_alive": "30m",
     }
 
     log.info(f"Sending to Ollama model '{model}' — {len(messages)} messages in context")

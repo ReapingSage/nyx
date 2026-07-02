@@ -15,6 +15,7 @@ tasks. Desktop/tool actions will route through OpenClaw's CLI layer.
 """
 
 import json
+import re
 import socket
 import time
 from pathlib import Path
@@ -125,6 +126,8 @@ def ask(message: str, timeout: int = 30) -> tuple[str, float]:
         "model": model,
         "messages": [{"role": "user", "content": message}],
         "stream": False,
+        # Same as ollama_provider — avoid a cold model reload after idle.
+        "keep_alive": "30m",
     }
 
     t0 = time.monotonic()
@@ -165,13 +168,19 @@ def test() -> dict:
     }
 
 
+def _contains_word(text: str, phrases) -> bool:
+    """Whole-word/phrase match. Plain substring matching false-positived
+    constantly — 'rm' fired on 'confirm'/'form', 'reg' on 'regular',
+    'no' on 'now'."""
+    return any(re.search(rf"\b{re.escape(p)}\b", text) for p in phrases)
+
+
 def is_dangerous_command(text: str) -> bool:
     """
     Lightweight safety guard — returns True if the message looks like
     a dangerous system command that OpenClaw should not execute.
     """
-    lower = text.lower()
-    return any(cmd in lower for cmd in SAFE_DENY_COMMANDS)
+    return _contains_word(text.lower(), SAFE_DENY_COMMANDS)
 
 
 # ── Pending confirmation state ────────────────────────────
@@ -210,16 +219,14 @@ def is_confirmation_of_pending(message: str) -> bool:
     """True if there is a pending action and the message looks like a confirmation."""
     if not _pending:
         return False
-    lower = message.lower().strip()
-    return any(w in lower for w in _CONFIRM_WORDS)
+    return _contains_word(message.lower().strip(), _CONFIRM_WORDS)
 
 
 def is_cancellation_of_pending(message: str) -> bool:
     """True if there is a pending action and the message looks like a cancellation."""
     if not _pending:
         return False
-    lower = message.lower().strip()
-    return any(w in lower for w in _CANCEL_WORDS)
+    return _contains_word(message.lower().strip(), _CANCEL_WORDS)
 
 
 # ── Intent → action mapping ───────────────────────────────

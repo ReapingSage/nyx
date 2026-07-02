@@ -18,10 +18,12 @@ Closing the NYX window hides it instead of destroying it, so the GUI loop
 
 import sys
 import os
+import shutil
 import socket
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 
 import psutil
 import pystray
@@ -29,12 +31,22 @@ import webview
 from PIL import Image, ImageDraw
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
+
+import config  # noqa: E402 — needs ROOT_DIR on sys.path first
+
 HOST = "127.0.0.1"
 PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}"
 START_POLL_ATTEMPTS = 30
 START_POLL_INTERVAL = 1.0
 LOCK_FILE = os.path.join(ROOT_DIR, "tray", ".tray.lock")
+
+# Ollama host/port come from the same config the backend uses — no second
+# hardcoded copy that can drift.
+_ollama = urlparse(config.OLLAMA_BASE_URL)
+OLLAMA_HOST = _ollama.hostname or "127.0.0.1"
+OLLAMA_PORT = _ollama.port or 11434
 
 
 def _is_tray_app_process(pid: int) -> bool:
@@ -99,6 +111,25 @@ def _port_is_open() -> bool:
         return False
 
 
+def _ollama_is_running() -> bool:
+    try:
+        with socket.create_connection((OLLAMA_HOST, OLLAMA_PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _find_ollama_binary() -> str | None:
+    """Ollama on PATH, or its default per-user Windows install location."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    candidate = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"
+    )
+    return candidate if os.path.isfile(candidate) else None
+
+
 def _find_uvicorn_pids() -> set[int]:
     """Find any process running NYX's uvicorn server, however it was started."""
     pids = set()
@@ -149,6 +180,7 @@ REFRESH_INTERVAL_SECS = 5
 class NyxTrayApp:
     def __init__(self):
         self.process: subprocess.Popen | None = None
+        self.ollama_process: subprocess.Popen | None = None
         self.window: "webview.Window | None" = None
         self._stop_refresh = threading.Event()
         self._quitting = False
@@ -166,7 +198,32 @@ class NyxTrayApp:
             return True
         return _port_is_open()
 
+    def _start_ollama_if_needed(self):
+        """NYX is useless without Ollama — bring it up alongside the backend
+        when it's installed but not running. If the user (or Windows) already
+        runs Ollama, we leave that instance alone and never own it."""
+        if _ollama_is_running():
+            return
+        binary = _find_ollama_binary()
+        if not binary:
+            return  # not installed — Model Manager page walks the user through it
+        try:
+            self.ollama_process = subprocess.Popen(
+                [binary, "serve"],
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except OSError:
+            self.ollama_process = None
+
+    def _stop_ollama_if_ours(self):
+        """Only stop an Ollama this tray app started — never one the user runs."""
+        if self.ollama_process is not None and self.ollama_process.poll() is None:
+            _terminate_tree(self.ollama_process.pid)
+        self.ollama_process = None
+
     def start_service(self, _icon=None, _item=None):
+        self._start_ollama_if_needed()
+
         if self.is_running():
             self._refresh()  # already running (maybe started elsewhere) — just sync the title
             return
@@ -192,6 +249,7 @@ class NyxTrayApp:
             for pid in pids:
                 _terminate_tree(pid)
 
+        self._stop_ollama_if_ours()
         self._refresh()
 
     def _wait_until_ready(self):
@@ -271,6 +329,7 @@ class NyxTrayApp:
         # exiting the tray shouldn't kill a server you started yourself in a terminal.
         if self.process is not None and self.process.poll() is None:
             self.stop_service()
+        self._stop_ollama_if_ours()
         self._stop_refresh.set()
         self._quitting = True
         if self.window is not None:

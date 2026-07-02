@@ -46,7 +46,8 @@ KEYWORDS: dict[str, tuple] = {
     "build nyx":              ("projects",      "Build NYX",              0.92),
     "nyx os":                 ("projects",      "NYX OS",                 0.92),
     "nyx ai":                 ("projects",      "NYX AI",                 0.90),
-    "discord server":         ("projects",      "Discord Server",         0.85),
+    # NOTE: "discord server" lives under relationships below — a dict can't
+    # hold the same key twice, and a second entry here would silently win.
     "discord bot":            ("projects",      "Discord Bot",            0.82),
     "voice ai":               ("projects",      "Voice AI",               0.85),
     "obsidian integration":   ("projects",      "Obsidian Integration",   0.82),

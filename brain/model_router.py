@@ -4,6 +4,8 @@ Reads the user's message and decides which local model to use.
 Routing is keyword-based for now. Replace with a classifier later.
 """
 
+import re
+
 import config
 from utils.logger import get_logger
 
@@ -54,6 +56,14 @@ DESKTOP_KEYWORDS = {
     "move window", "resize window", "minimize", "maximize",
     "open file", "open folder", "find file", "move file", "copy file",
     "navigate to url", "go to website", "browse to",
+    # Named OpenClaw actions (frameworks/openclaw) — without these here the
+    # router never sends their trigger phrases to the OpenClaw layer at all,
+    # so the actions were unreachable from chat.
+    "ixl", "imagine learning", "edgenuity", "log into imagine", "login imagine",
+    "sign into imagine",
+    "open vscode", "open vs code", "open visual studio code",
+    "open cmd", "open command prompt",
+    "close browser",
     "volume up", "volume down", "mute", "unmute",
     "scroll", "drag", "drop",
     "automate", "automation", "desktop task",
@@ -62,6 +72,19 @@ DESKTOP_KEYWORDS = {
     "open discord", "launch discord", "close discord",
     "second monitor", "monitor 2", "move to monitor", "put on monitor",
 }
+
+
+def _matches(words: set[str], text: str, keywords: set[str]) -> bool:
+    """Single-word keywords must match a whole word ('api' shouldn't fire on
+    'rapid', 'fix' shouldn't fire on 'prefix'); multi-word phrases match as
+    substrings of the full text."""
+    for kw in keywords:
+        if " " in kw:
+            if kw in text:
+                return True
+        elif kw in words:
+            return True
+    return False
 
 
 def route(user_input: str) -> tuple[str, str]:
@@ -76,40 +99,53 @@ def route(user_input: str) -> tuple[str, str]:
         reason_string explains why this model was chosen — useful for debugging.
     """
     text = user_input.lower()
-    words = set(text.split())
+    words = set(re.findall(r"[a-z0-9+#]+", text))
 
     from core import app_settings
-    automation_enabled = app_settings.get_section("automation").get("openclaw_enabled", True)
+    from core import model_manager
+
+    # One settings read per message — get_section() re-reads the JSON file
+    # on every call, and route() runs for every single chat message.
+    settings = app_settings.load()
+    automation_enabled = settings.get("automation", {}).get("openclaw_enabled", True)
+
+    # Manual Model Manager role assignments override the config.py defaults —
+    # reassigning a role in the UI must actually change routing, not just the
+    # label shown on the Models page.
+    manual = model_manager.load_assignments()
+    model_main  = manual.get("main")   or config.MODEL_MAIN
+    model_coder = manual.get("coding") or config.MODEL_CODER
+    model_fast  = manual.get("fast")   or config.MODEL_FAST
 
     # Check desktop/automation keywords — route to OpenClaw layer
-    if any(kw in text for kw in DESKTOP_KEYWORDS):
+    if _matches(words, text, DESKTOP_KEYWORDS):
         if automation_enabled:
             return "openclaw", "desktop/automation action detected"
-        return config.MODEL_MAIN, "desktop action detected but automation is disabled in Settings"
+        return model_main, "desktop action detected but automation is disabled in Settings"
 
     # Creative requests — check before coding so "description" doesn't hit coder
-    if any(kw in text for kw in CREATIVE_KEYWORDS):
-        return config.MODEL_MAIN, "creative/general request"
+    if _matches(words, text, CREATIVE_KEYWORDS):
+        return model_main, "creative/general request"
 
     # Check coding keywords
-    if words & CODING_KEYWORDS or any(kw in text for kw in CODING_KEYWORDS):
-        return config.MODEL_CODER, "coding/technical keywords detected"
+    if _matches(words, text, CODING_KEYWORDS):
+        return model_coder, "coding/technical keywords detected"
 
     # Check fast/lightweight keywords
-    if words & FAST_KEYWORDS or any(kw in text for kw in FAST_KEYWORDS):
-        return config.MODEL_FAST, "fast/simple request detected"
+    if _matches(words, text, FAST_KEYWORDS):
+        return model_fast, "fast/simple request detected"
 
     # Check reasoning keywords
-    if words & REASON_KEYWORDS or any(kw in text for kw in REASON_KEYWORDS):
+    if _matches(words, text, REASON_KEYWORDS):
         return config.MODEL_REASON, "reasoning/planning keywords detected"
 
     # Flagship model — config.py sets the build-time default; the
     # Experimental settings toggle overrides it at runtime.
-    flagship_enabled = app_settings.get_section("experimental").get(
+    flagship_enabled = settings.get("experimental", {}).get(
         "flagship_model_enabled", config.FLAGSHIP_ENABLED
     )
     if flagship_enabled:
         return config.MODEL_FLAGSHIP, "flagship model active"
 
     # Default: main assistant brain
-    return config.MODEL_MAIN, "default assistant model"
+    return model_main, "default assistant model"

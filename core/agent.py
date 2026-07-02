@@ -19,6 +19,11 @@ class NyxAgent:
     Vault memory notes are injected as context and auto-refreshed when changed.
     """
 
+    # Conversation messages kept (system/vault messages are always kept).
+    # Unbounded history makes every Ollama call slower and slower and
+    # eventually overflows the model's context window entirely.
+    MAX_CONVO_MESSAGES = 40
+
     def __init__(self):
         self.history: list[dict] = [
             {"role": "system", "content": config.NYX_SYSTEM_PROMPT}
@@ -58,6 +63,14 @@ class NyxAgent:
             log.info("[vault] Context injected into session.")
 
         self._vault_mtime = current
+
+    def _trim_history(self) -> None:
+        """Cap the conversation at MAX_CONVO_MESSAGES, keeping all system
+        (prompt + vault context) messages and the most recent exchanges."""
+        system = [m for m in self.history if m["role"] == "system"]
+        convo  = [m for m in self.history if m["role"] != "system"]
+        if len(convo) > self.MAX_CONVO_MESSAGES:
+            self.history = system + convo[-self.MAX_CONVO_MESSAGES:]
 
     def handle(self, user_input: str) -> str:
         """
@@ -100,6 +113,7 @@ class NyxAgent:
             if location:
                 response = get_weather(location)
                 self.history.append({"role": "assistant", "content": response})
+                self._trim_history()
                 memory_manager.save_exchange(user_input=stripped, response=response, model="weather-tool")
                 return response
 
@@ -126,6 +140,7 @@ class NyxAgent:
 
             if response:
                 self.history.append({"role": "assistant", "content": response})
+                self._trim_history()
                 memory_manager.save_exchange(user_input=stripped, response=response, model="search+llm")
                 return response
 
@@ -156,6 +171,7 @@ class NyxAgent:
 
         # ── Add Nyx's reply to history ────────────────────
         self.history.append({"role": "assistant", "content": response})
+        self._trim_history()
 
         # ── Save to disk ──────────────────────────────────
         memory_manager.save_exchange(user_input=stripped, response=response, model=model)
