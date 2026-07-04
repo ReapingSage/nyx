@@ -95,6 +95,14 @@ def list_installed_models() -> list[dict]:
         return []
 
 
+def get_profile() -> str:
+    """Return 'laptop' when running the lite config (3b-class models), else 'desktop'."""
+    m = config.MODEL_MAIN.lower()
+    if any(t in m for t in (":1b", ":2b", ":3b")):
+        return "laptop"
+    return "desktop"
+
+
 def missing_recommended(profile: str = "desktop") -> list[dict]:
     installed_names = {m["name"] for m in list_installed_models()}
     recs = RECOMMENDED_MODELS.get(profile, [])

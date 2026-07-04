@@ -14,6 +14,7 @@ import json
 import uuid
 import random
 import platform
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -45,14 +46,32 @@ log = get_logger(__name__)
 
 app = FastAPI(title="Nyx API", version="1.0.0")
 
+# Only the local dashboard (served by this server or the Vite dev server) may
+# call the API from a browser. A wildcard here would let any website you visit
+# silently read memories, send chats, and trigger desktop actions via your browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8000", "http://localhost:8000",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 agent = NyxAgent()
+
+
+@app.on_event("shutdown")
+async def _shutdown_cleanup():
+    """Release everything NYX itself spawned so a graceful stop (Ctrl+C,
+    uvicorn reload, tray Stop) never leaves an orphaned automation browser."""
+    try:
+        from frameworks.openclaw.browser import close_browser
+        close_browser()
+    except Exception as e:
+        log.warning(f"[shutdown] Browser cleanup failed: {e}")
+    event_log.log_event("system", "System Shutdown", "Nyx Core stopped cleanly.")
 
 FRONTEND_ROOT = ROOT_DIR / "nyx_frontend"
 FRONTEND_DIST = FRONTEND_ROOT / "dist"
@@ -65,6 +84,16 @@ if FRONTEND_DIST.exists():
 VOICE_OUTPUTS = ROOT_DIR / "voice" / "outputs"
 VOICE_OUTPUTS.mkdir(parents=True, exist_ok=True)
 app.mount("/voice-audio", StaticFiles(directory=str(VOICE_OUTPUTS)), name="voice-audio")
+
+# Generated TTS clips are one-shot — purge anything older than a week on
+# startup so the folder doesn't grow forever.
+_audio_cutoff = time.time() - 7 * 24 * 3600
+for _f in list(VOICE_OUTPUTS.glob("*.mp3")) + list(VOICE_OUTPUTS.glob("*.wav")):
+    try:
+        if _f.stat().st_mtime < _audio_cutoff:
+            _f.unlink()
+    except OSError:
+        pass
 
 # ── WebSocket manager — pushes events to connected browser tabs ──
 class VoiceWSManager:
@@ -131,33 +160,43 @@ async def voice_respond(req: VoiceTranscriptRequest):
 
     from voice.text_to_speech import speak_to_file
 
-    # Generate acknowledgment audio (short phrase, plays while AI thinks)
-    ack_phrase = random.choice(ACK_PHRASES)
-    ack_url    = None
-    try:
-        ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
-        result   = speak_to_file(ack_phrase, ack_path)
-        if result and result.exists():
-            ack_url = f"/voice-audio/{result.name}"
-    except Exception as exc:
-        log.warning(f"ACK TTS failed: {exc}")
-
-    # Route through AI agent — off the event loop, agent.handle() makes
-    # blocking network calls (Ollama) that would otherwise freeze every
-    # other request on this server until it finishes.
     import asyncio
     loop = asyncio.get_event_loop()
-    response_text = await loop.run_in_executor(None, agent.handle, transcript)
 
-    # Generate response TTS
-    audio_url = None
-    try:
-        resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
-        result    = speak_to_file(response_text, resp_path)
-        if result and result.exists():
-            audio_url = f"/voice-audio/{result.name}"
-    except Exception as exc:
-        log.warning(f"TTS generation failed: {exc}")
+    # Acknowledgment audio (short phrase, plays while AI thinks)
+    ack_phrase = random.choice(ACK_PHRASES)
+
+    def _gen_ack() -> str | None:
+        try:
+            ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
+            result   = speak_to_file(ack_phrase, ack_path)
+            if result and result.exists():
+                return f"/voice-audio/{result.name}"
+        except Exception as exc:
+            log.warning(f"ACK TTS failed: {exc}")
+        return None
+
+    # The ack TTS and the AI reply don't depend on each other — run both off
+    # the event loop (they make blocking network calls that would otherwise
+    # freeze every other request) and at the same time, instead of paying for
+    # them back-to-back.
+    ack_url, response_text = await asyncio.gather(
+        loop.run_in_executor(None, _gen_ack),
+        loop.run_in_executor(None, agent.handle, transcript),
+    )
+
+    # Generate response TTS — also off the event loop
+    def _gen_response_tts() -> str | None:
+        try:
+            resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
+            result    = speak_to_file(response_text, resp_path)
+            if result and result.exists():
+                return f"/voice-audio/{result.name}"
+        except Exception as exc:
+            log.warning(f"TTS generation failed: {exc}")
+        return None
+
+    audio_url = await loop.run_in_executor(None, _gen_response_tts)
 
     payload = {
         "transcript":    transcript,
@@ -252,7 +291,7 @@ async def serve_dashboard():
     <body>
         <div class="orb"></div>
         <h1>NYX</h1>
-        <p>Frontend fallback loaded. Create ui/frontend/index.html later.</p>
+        <p>Frontend fallback loaded. Build the dashboard: cd nyx_frontend &amp;&amp; npm run build</p>
     </body>
     </html>
     """
@@ -306,19 +345,23 @@ async def system_stats():
         gpu_info = {"available": False, "usage": None, "name": None,
                     "vram_used_mb": None, "vram_total_mb": None, "temp_c": None}
         try:
-            import GPUtil
-            gpus = GPUtil.getGPUs()
-            if gpus:
-                g = gpus[0]
+            result = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                parts = [p.strip() for p in result.stdout.strip().split(",")]
                 gpu_info = {
                     "available":     True,
-                    "usage":         round(g.load * 100, 1),
-                    "name":          g.name,
-                    "vram_used_mb":  round(g.memoryUsed),
-                    "vram_total_mb": round(g.memoryTotal),
-                    "temp_c":        g.temperature,
+                    "name":          parts[0],
+                    "vram_used_mb":  int(parts[1]),
+                    "vram_total_mb": int(parts[2]),
+                    "temp_c":        int(parts[3]),
+                    "usage":         int(parts[4]),
                 }
-        except ImportError:
+        except Exception:
             pass
 
         freq = psutil.cpu_freq()
@@ -578,10 +621,14 @@ async def net_status():
 
     uptime_sec = int(time.time() - psutil.boot_time())
 
+    # A manual Model Manager assignment for the "main" role overrides the
+    # config.py default — report what routing will actually use.
+    active_model = model_manager.load_assignments().get("main") or config.MODEL_MAIN
+
     result = {
         "offline_mode":    _net_offline,
         "active_provider": config.AI_PROVIDER,
-        "active_model":    config.MODEL_MAIN,
+        "active_model":    active_model,
         "internet":  {"online": inet_ok, "latency_ms": inet_ms},
         "backend":   {"online": True,    "latency_ms": 0},
         "providers": {
@@ -590,21 +637,21 @@ async def net_status():
                 "online":     olla_ok and not _net_offline,
                 "latency_ms": olla_ms,
                 "base_url":   config.OLLAMA_BASE_URL,
-                "model":      config.MODEL_MAIN,
+                "model":      active_model,
                 "is_active":  config.AI_PROVIDER == "ollama" and not _net_offline,
             },
             "openai": {
                 "configured": bool(config.OPENAI_API_KEY),
                 "online":     None,
                 "base_url":   "api.openai.com",
-                "model":      "gpt-4o",
+                "model":      "gpt-4o-mini",  # matches brain/openai_provider.py default
                 "is_active":  config.AI_PROVIDER == "openai" and not _net_offline,
             },
             "claude": {
                 "configured": bool(config.ANTHROPIC_API_KEY),
                 "online":     None,
                 "base_url":   "api.anthropic.com",
-                "model":      "claude-sonnet-4-6",
+                "model":      "claude-sonnet-4-5",  # matches brain/claude_provider.py default
                 "is_active":  config.AI_PROVIDER == "claude" and not _net_offline,
             },
             "offline": {
@@ -617,7 +664,9 @@ async def net_status():
                 "online":     claw_ok and not _net_offline,
                 "latency_ms": claw_ms,
                 "gateway_url": f"ws://{config.OPENCLAW_HOST}:{config.OPENCLAW_PORT}",
-                "model":      "llama3.2:3b",
+                # Read the model OpenClaw is actually configured to use rather
+                # than hardcoding one here.
+                "model":      openclaw_provider._ollama_model(),
                 "is_active":  claw_ok and not _net_offline,
             },
         },
@@ -716,7 +765,9 @@ class ModelPullRequest(BaseModel):
 
 @app.get("/api/models/status")
 async def models_status():
-    return model_manager.get_ollama_status()
+    status = model_manager.get_ollama_status()
+    status["profile"] = model_manager.get_profile()
+    return status
 
 
 @app.get("/api/models/list")
@@ -832,7 +883,11 @@ class NotificationTestRequest(BaseModel):
 @app.post("/api/notifications/test")
 async def notifications_test(req: NotificationTestRequest):
     from tools.system.notifications import notify
-    result = notify(req.title, req.message, category="general")
+    import asyncio
+    # win11toast blocks until the toast times out or is dismissed — keep it
+    # off the event loop so it can't freeze every other request meanwhile.
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, notify, req.title, req.message, "general")
     return {"result": result}
 
 
@@ -884,7 +939,10 @@ async def update_task(task_id: str, req: TaskUpdateRequest):
     if updates.get("status") == "COMPLETE":
         event_log.log_event("tasks", f"Task complete: {task['name']}")
         from tools.system.notifications import notify
-        notify("Task Complete", task["name"], category="task_complete")
+        import asyncio
+        # Fire-and-forget off the event loop — win11toast blocks until the
+        # toast is dismissed, and the API response shouldn't wait on that.
+        asyncio.get_event_loop().run_in_executor(None, notify, "Task Complete", task["name"], "task_complete")
     return task
 
 

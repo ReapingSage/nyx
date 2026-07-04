@@ -4,6 +4,9 @@ dist/
 .env.local
 .env.production
 *.log
+# Rotated log backups (nyx.log.1, nyx.log.2) aren't matched by *.log —
+# they contain chat history and must never be committed
+logs/
 .DS_Store
 venv/
 __pycache__/

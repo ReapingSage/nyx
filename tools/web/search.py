@@ -33,12 +33,15 @@ _TRIGGERS = [
 ]
 
 # Patterns that signal the user wants current/live info even without explicit "search"
+# NOTE: no bare time-words pattern (today/tonight/right now/...) — it fired a
+# multi-second web lookup on personal messages like "I'm tired today" where a
+# search result is useless. Time words only count next to a news-ish word.
 _LIVE_INFO_PATTERNS = [
-    r"\b(?:today|tonight|right now|currently|at the moment|this week|this year)\b",
     r"\b(?:latest|recent|breaking|live|real.?time)\b",
-    r"\b(?:news|headline|update|announcement)\b",
+    r"\b(?:news|headline|announcement)\b",
     r"\b(?:score|result|winner|standings)\b",
     r"\b(?:price|stock|crypto|bitcoin|market)\b",
+    r"\b(?:today'?s?|tonight'?s?)\s+(?:news|weather|score|game|match|headlines?)\b",
 ]
 
 

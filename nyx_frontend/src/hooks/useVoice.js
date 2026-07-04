@@ -133,7 +133,9 @@ export function useVoice({ onMessage, onOrbState }) {
     let ws, retryTimer
     const connect = () => {
       try {
-        ws = new WebSocket('ws://localhost:8000/ws/voice')
+        // Derive from API_URL so there's exactly one place the backend
+        // address lives (and it stays 127.0.0.1, not slow-resolving localhost)
+        ws = new WebSocket(`${API_URL.replace(/^http/, 'ws')}/ws/voice`)
         ws.onmessage = (e) => {
           try {
             const d = JSON.parse(e.data)

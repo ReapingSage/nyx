@@ -42,4 +42,7 @@ export const PAGE_PATHS = {
 // Initial placeholder shown only until the first real /api/system response arrives.
 export const MOCK_SYSTEM = { cpu: 0, memory: 0, disk: 0, network: 0 }
 
-export const API_URL = 'http://localhost:8000'
+// 127.0.0.1, not localhost — same class of bug as the v1.14 Ollama fix:
+// on Windows "localhost" can resolve to IPv6 (::1) first and stall before
+// falling back to IPv4, and the backend binds to 127.0.0.1.
+export const API_URL = 'http://127.0.0.1:8000'

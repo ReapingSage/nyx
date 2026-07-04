@@ -10,8 +10,7 @@ import {
   Plus, Upload, BarChart2, Play, Pause, X,
   CheckCircle2, AlertCircle, Clock, MessageSquare,
 } from 'lucide-react'
-
-const API_URL = 'http://localhost:8000'
+import { API_URL } from '../utils/constants.js'
 
 // ─────────────────────────────────────────────────────────────
 // TASK STATE MACHINE
