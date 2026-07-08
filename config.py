@@ -30,6 +30,10 @@ MODEL_REASON   = "qwen2.5:7b"
 MODEL_FLAGSHIP   = "llama3.3"
 FLAGSHIP_ENABLED = False
 
+# Embedding model for vault memory retrieval (core/memory_rag.py).
+# Install with: ollama pull nomic-embed-text
+EMBED_MODEL = "nomic-embed-text"
+
 # ── AI Provider ───────────────────────────────────────────
 AI_PROVIDER: str = os.getenv("AI_PROVIDER", "ollama")
 

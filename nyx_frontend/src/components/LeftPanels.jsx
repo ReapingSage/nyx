@@ -75,6 +75,12 @@ export default function LeftPanels({ visible }) {
   const [stats, setStats]     = useState(MOCK_SYSTEM)
   const [tasks, setTasks]     = useState([])
   const [reminders, setReminders] = useState([])
+  // System Overview is dismissable; remember the choice across sessions
+  const [showOverview, setShowOverview] = useState(() => localStorage.getItem('nyx_overview_hidden') !== '1')
+  const dismissOverview = () => {
+    localStorage.setItem('nyx_overview_hidden', '1')
+    setShowOverview(false)
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -117,16 +123,24 @@ export default function LeftPanels({ visible }) {
     }}>
 
       {/* System Overview */}
-      <div style={PANEL_STYLE} className="panel-anim">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <span style={TITLE_STYLE}>System Overview</span>
-          <span style={{ color: 'var(--color-text-disabled)', fontSize: 11, cursor: 'pointer' }}>×</span>
+      {showOverview && (
+        <div style={PANEL_STYLE} className="panel-anim">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={TITLE_STYLE}>System Overview</span>
+            <span
+              onClick={dismissOverview}
+              title="Hide System Overview"
+              style={{ color: 'var(--color-text-disabled)', fontSize: 13, cursor: 'pointer', lineHeight: 1, padding: '0 2px' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--color-accent)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--color-text-disabled)' }}
+            >×</span>
+          </div>
+          <CircularMeter label="CPU Usage"   value={stats.cpu}     color="#8F5CFF" />
+          <CircularMeter label="Memory"      value={stats.memory}  color="#4D8DFF" />
+          <CircularMeter label="Disk Space"  value={stats.disk}    color="#B96CFF" />
+          <CircularMeter label="Network"     value={stats.network} color="#7AA7FF" />
         </div>
-        <CircularMeter label="CPU Usage"   value={stats.cpu}     color="#8F5CFF" />
-        <CircularMeter label="Memory"      value={stats.memory}  color="#4D8DFF" />
-        <CircularMeter label="Disk Space"  value={stats.disk}    color="#B96CFF" />
-        <CircularMeter label="Network"     value={stats.network} color="#7AA7FF" />
-      </div>
+      )}
 
       {/* Active Tasks */}
       <div style={PANEL_STYLE} className="panel-anim">

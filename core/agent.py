@@ -28,41 +28,31 @@ class NyxAgent:
         self.history: list[dict] = [
             {"role": "system", "content": config.NYX_SYSTEM_PROMPT}
         ]
-        self._vault_mtime: float = 0.0
-        self._refresh_vault_context()
         log.info("NyxAgent initialized with system prompt loaded.")
 
     # ── Vault context helpers ─────────────────────────────
 
-    def _vault_mtime_current(self) -> float:
-        """Return the newest mtime across all Memory/*.md files."""
-        d = vault_bridge.get_memory_dir()
-        if not d.exists():
-            return 0.0
-        mtimes = [f.stat().st_mtime for f in d.glob("*.md") if f.is_file()]
-        return max(mtimes, default=0.0)
+    def _inject_vault_context(self, query: str) -> None:
+        """Inject vault memory relevant to this message (RAG via
+        core/memory_rag; falls back to the full vault when embeddings are
+        unavailable or the vault is small). Replaces any previous block so
+        the context always matches the current message."""
+        try:
+            from core import memory_rag
+            context = memory_rag.get_context(query)
+        except Exception as e:
+            log.warning(f"[vault] Retrieval failed, using full context: {e}")
+            context = vault_bridge.read_context()
 
-    def _refresh_vault_context(self) -> None:
-        """Re-inject vault context into history if Memory/ files have changed."""
-        current = self._vault_mtime_current()
-        if current <= self._vault_mtime:
-            return
-
-        # Remove any previously injected vault context block
         self.history = [
             m for m in self.history
             if not (m["role"] == "system" and m["content"].startswith("[Vault Memory"))
         ]
-
-        context = vault_bridge.read_context()
         if context:
             self.history.insert(1, {
                 "role":    "system",
-                "content": f"[Vault Memory — notes from your Obsidian knowledge base]\n\n{context}",
+                "content": f"[Vault Memory — notes from your knowledge base]\n\n{context}",
             })
-            log.info("[vault] Context injected into session.")
-
-        self._vault_mtime = current
 
     def _trim_history(self) -> None:
         """Cap the conversation at MAX_CONVO_MESSAGES, keeping all system
@@ -89,8 +79,8 @@ class NyxAgent:
         if not stripped:
             return ""
 
-        # Refresh vault context if any Memory/*.md files changed
-        self._refresh_vault_context()
+        # Inject vault memory relevant to this message
+        self._inject_vault_context(stripped)
 
         # ── Permission check ──────────────────────────────
         if not permissions.check(stripped):
@@ -105,6 +95,29 @@ class NyxAgent:
 
         # ── Add user message to history ───────────────────
         self.history.append({"role": "user", "content": stripped})
+
+        # ── Timer shortcut — real timers, no LLM ─────────
+        from tools.system.timers import try_handle as try_handle_timer
+        timer_response = try_handle_timer(stripped)
+        if timer_response:
+            self.history.append({"role": "assistant", "content": timer_response})
+            self._trim_history()
+            memory_manager.save_exchange(user_input=stripped, response=timer_response, model="timer-tool")
+            return timer_response
+
+        # ── Music player control — NYX's own player, no LLM ──
+        # Gated behind the Music plugin; when it's not installed, music
+        # phrases fall through to the system media keys instead.
+        from core import plugin_registry
+        music_response = None
+        if plugin_registry.is_installed("music"):
+            from tools.system.music_control import try_handle as try_handle_music
+            music_response = try_handle_music(stripped)
+        if music_response:
+            self.history.append({"role": "assistant", "content": music_response})
+            self._trim_history()
+            memory_manager.save_exchange(user_input=stripped, response=music_response, model="music-tool")
+            return music_response
 
         # ── Weather shortcut — real data, no LLM ─────────
         from tools.web.weather import is_weather_query, extract_location, get_weather

@@ -1,41 +1,41 @@
-# NYX Voice System
+﻿# NYX Voice System
 
 Local voice generation and testing for NYX.
 
-## Current Phase: Phase 1 — TTS Generation Test
+## Current Phase: Phase 1 â€” TTS Generation Test
 
 **What works now:**
-- Text → audio file generation
+- Text â†’ audio file generation
 - Multiple TTS engine fallback chain
 - Custom voice sample support (XTTS v2)
 
 **Coming later:**
-- Phase 2: Mic → Whisper → Ollama → TTS (full voice loop)
+- Phase 2: Mic â†’ Whisper â†’ Ollama â†’ TTS (full voice loop)
 - Phase 3: Voice states connected to the NYX orb UI
 
 ---
 
 ## Quick Start
 
-### Step 1 — Open PowerShell in project root
+### Step 1 â€” Open PowerShell in project root
 
 ```powershell
-cd "C:\Users\saget\OneDrive\Documents\nyx"
+cd "C:\Users\saget\nyx"
 ```
 
-### Step 2 — Install edge-tts (recommended for Python 3.14+)
+### Step 2 â€” Install edge-tts (recommended for Python 3.14+)
 
 ```powershell
 pip install edge-tts
 ```
 
-### Step 3 — Run the voice test
+### Step 3 â€” Run the voice test
 
 ```powershell
 python voice/test_voice.py
 ```
 
-### Step 4 — Open the generated file
+### Step 4 â€” Open the generated file
 
 The audio will be saved to:
 ```
@@ -76,12 +76,12 @@ NYX tries engines in this order:
 
 | Priority | Engine        | Quality  | Requirement                        |
 |----------|---------------|----------|------------------------------------|
-| 1        | XTTS v2       | Best     | Python 3.9–3.11 + `pip install TTS` |
+| 1        | XTTS v2       | Best     | Python 3.9â€“3.11 + `pip install TTS` |
 | 2        | edge-tts      | Excellent| Any Python + `pip install edge-tts` |
 | 3        | pyttsx3       | Basic    | Any Python + `pip install pyttsx3`  |
 
 **Python 3.14 users:** Coqui TTS (XTTS) requires PyTorch which may not
-have Python 3.14 wheels yet. Use edge-tts instead — the voice quality
+have Python 3.14 wheels yet. Use edge-tts instead â€” the voice quality
 is genuinely good for this use case.
 
 ---
@@ -117,7 +117,7 @@ EDGE_PITCH = "-5Hz"   # negative = lower (more depth)
 
 ## Using a custom reference voice (XTTS v2)
 
-1. Install XTTS (requires Python 3.9–3.11):
+1. Install XTTS (requires Python 3.9â€“3.11):
    ```powershell
    pip install TTS soundfile
    ```
@@ -127,7 +127,7 @@ EDGE_PITCH = "-5Hz"   # negative = lower (more depth)
    voice/samples/nyx_reference.wav
    ```
 
-3. Run the test script — it will automatically use the sample:
+3. Run the test script â€” it will automatically use the sample:
    ```powershell
    python voice/test_voice.py
    ```
@@ -140,14 +140,14 @@ See `voice/samples/README.md` for recording guidelines.
 
 ```
 voice/
-├── README.md           ← this file
-├── voice_config.py     ← engine settings, voice selection
-├── test_voice.py       ← run this to test
-├── text_to_speech.py   ← TTS engine (edge-tts / XTTS / pyttsx3)
-├── speech_to_text.py   ← Phase 2: mic → text (not yet active)
-├── voice_manager.py    ← Phase 2: full voice loop (not yet active)
-├── outputs/            ← generated audio files land here
-└── samples/            ← place nyx_reference.wav here
+â”œâ”€â”€ README.md           â† this file
+â”œâ”€â”€ voice_config.py     â† engine settings, voice selection
+â”œâ”€â”€ test_voice.py       â† run this to test
+â”œâ”€â”€ text_to_speech.py   â† TTS engine (edge-tts / XTTS / pyttsx3)
+â”œâ”€â”€ speech_to_text.py   â† Phase 2: mic â†’ text (not yet active)
+â”œâ”€â”€ voice_manager.py    â† Phase 2: full voice loop (not yet active)
+â”œâ”€â”€ outputs/            â† generated audio files land here
+â””â”€â”€ samples/            â† place nyx_reference.wav here
 ```
 
 ---
@@ -168,3 +168,4 @@ pip install edge-tts
 - PyTorch does not yet have Python 3.14 wheels.
 - Use edge-tts for now. Switch to XTTS when PyTorch 3.14 support arrives.
 - Or install Python 3.11 alongside your current version and use a venv.
+

@@ -43,11 +43,40 @@ def create_reminder(name: str, due_at: str) -> dict:
         "name": name,
         "due_at": due_at,
         "created_at": datetime.now().isoformat(),
+        "fired": False,
     }
     reminders = _load()
     reminders.append(reminder)
     _save(reminders)
     return reminder
+
+
+def due_unfired() -> list[dict]:
+    """Reminders whose due_at has passed and that haven't notified yet."""
+    due = []
+    for r in _load():
+        if r.get("fired"):
+            continue
+        try:
+            due_at = datetime.fromisoformat(r["due_at"].replace("Z", "+00:00"))
+            # JS toISOString() sends timezone-aware strings, manual entry may
+            # be naive — pick the matching "now" or the comparison raises.
+            now = datetime.now(due_at.tzinfo) if due_at.tzinfo else datetime.now()
+            if due_at <= now:
+                due.append(r)
+        except (ValueError, TypeError, AttributeError):
+            log.warning(f"[reminders_store] Unparseable due_at on '{r.get('name')}' — skipping")
+    return due
+
+
+def mark_fired(reminder_id: str) -> None:
+    reminders = _load()
+    for r in reminders:
+        if r["id"] == reminder_id:
+            r["fired"] = True
+            r["fired_at"] = datetime.now().isoformat()
+            _save(reminders)
+            return
 
 
 def delete_reminder(reminder_id: str) -> bool:

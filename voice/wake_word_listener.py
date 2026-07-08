@@ -11,7 +11,7 @@ Requirements:
     pip install SpeechRecognition sounddevice requests
 
 Usage (keep running in a separate terminal):
-    cd C:\\Users\\saget\\OneDrive\\Documents\\nyx
+    cd C:\\Users\\saget\\nyx
     python voice/wake_word_listener.py
 
 Stop with Ctrl+C.
