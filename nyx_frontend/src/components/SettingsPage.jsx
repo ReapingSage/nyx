@@ -1591,6 +1591,25 @@ export default function SettingsPage({ onNavigate }) {
           />
         </div>
 
+        {/* Universal search hint — this box filters settings; Ctrl+K searches
+            all of NYX from anywhere. */}
+        <div
+          title="Search all of NYX from anywhere"
+          onClick={() => window.dispatchEvent(new Event('nyx:command-palette'))}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexShrink: 0,
+            border: '1px solid rgba(var(--color-primary-rgb), 0.20)', borderRadius: 7, padding: '7px 11px',
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(var(--color-primary-rgb), 0.45)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(var(--color-primary-rgb), 0.20)' }}
+        >
+          <span style={{ fontSize: 11, color: 'var(--color-text-disabled)' }}>⌕</span>
+          <span style={{ fontFamily: 'Share Tech Mono', fontSize: 9, letterSpacing: '0.10em', color: 'var(--color-text-muted)' }}>
+            Ctrl+K universal search
+          </span>
+        </div>
+
         {/* Restore defaults */}
         <button
           onClick={() => { setThemeId('nyx-purple'); setBgStyle('deep-space') }}

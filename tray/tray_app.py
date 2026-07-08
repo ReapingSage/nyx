@@ -12,16 +12,19 @@ port, and Stop can shut down an instance it didn't itself start.
 
 Threading model: pywebview owns the main thread (webview.start() blocks
 there). The tray icon (pystray) runs on a thread pywebview spawns for us.
-Closing the NYX window hides it instead of destroying it, so the GUI loop
-— and the tray icon — keep running until you choose Exit.
+Closing the NYX window (X) is a full shutdown — backend, tray icon, and
+any Ollama this app started all stop, so close-and-reopen gives a fresh
+backend. The tray menu also has Restart NYX for a one-click restart.
 """
 
 import sys
 import os
+import shutil
 import socket
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 
 import psutil
 import pystray
@@ -29,12 +32,22 @@ import webview
 from PIL import Image, ImageDraw
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
+
+import config  # noqa: E402 — needs ROOT_DIR on sys.path first
+
 HOST = "127.0.0.1"
 PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}"
-START_POLL_ATTEMPTS = 10
-START_POLL_INTERVAL = 0.5
+START_POLL_ATTEMPTS = 30
+START_POLL_INTERVAL = 1.0
 LOCK_FILE = os.path.join(ROOT_DIR, "tray", ".tray.lock")
+
+# Ollama host/port come from the same config the backend uses — no second
+# hardcoded copy that can drift.
+_ollama = urlparse(config.OLLAMA_BASE_URL)
+OLLAMA_HOST = _ollama.hostname or "127.0.0.1"
+OLLAMA_PORT = _ollama.port or 11434
 
 
 def _is_tray_app_process(pid: int) -> bool:
@@ -99,6 +112,25 @@ def _port_is_open() -> bool:
         return False
 
 
+def _ollama_is_running() -> bool:
+    try:
+        with socket.create_connection((OLLAMA_HOST, OLLAMA_PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _find_ollama_binary() -> str | None:
+    """Ollama on PATH, or its default per-user Windows install location."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    candidate = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"
+    )
+    return candidate if os.path.isfile(candidate) else None
+
+
 def _find_uvicorn_pids() -> set[int]:
     """Find any process running NYX's uvicorn server, however it was started."""
     pids = set()
@@ -149,6 +181,7 @@ REFRESH_INTERVAL_SECS = 5
 class NyxTrayApp:
     def __init__(self):
         self.process: subprocess.Popen | None = None
+        self.ollama_process: subprocess.Popen | None = None
         self.window: "webview.Window | None" = None
         self._stop_refresh = threading.Event()
         self._quitting = False
@@ -166,7 +199,32 @@ class NyxTrayApp:
             return True
         return _port_is_open()
 
+    def _start_ollama_if_needed(self):
+        """NYX is useless without Ollama — bring it up alongside the backend
+        when it's installed but not running. If the user (or Windows) already
+        runs Ollama, we leave that instance alone and never own it."""
+        if _ollama_is_running():
+            return
+        binary = _find_ollama_binary()
+        if not binary:
+            return  # not installed — Model Manager page walks the user through it
+        try:
+            self.ollama_process = subprocess.Popen(
+                [binary, "serve"],
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except OSError:
+            self.ollama_process = None
+
+    def _stop_ollama_if_ours(self):
+        """Only stop an Ollama this tray app started — never one the user runs."""
+        if self.ollama_process is not None and self.ollama_process.poll() is None:
+            _terminate_tree(self.ollama_process.pid)
+        self.ollama_process = None
+
     def start_service(self, _icon=None, _item=None):
+        self._start_ollama_if_needed()
+
         if self.is_running():
             self._refresh()  # already running (maybe started elsewhere) — just sync the title
             return
@@ -192,6 +250,16 @@ class NyxTrayApp:
             for pid in pids:
                 _terminate_tree(pid)
 
+        self._stop_ollama_if_ours()
+        self._refresh()
+
+    def restart_service(self, _icon=None, _item=None):
+        """One-click backend restart — what 'close and reopen' was being
+        used for. Stops whatever is running (including a terminal-started
+        instance, since a restart is explicitly requested) and starts fresh."""
+        self.stop_service()
+        self.start_service()
+        self._wait_until_ready()
         self._refresh()
 
     def _wait_until_ready(self):
@@ -216,13 +284,31 @@ class NyxTrayApp:
     # ── Native window actions ────────────────────────────────
 
     def _on_window_closing(self):
-        """Closing the window (the X button) hides it instead of destroying
-        it — that keeps pywebview's GUI loop (and the tray icon riding on
-        it) alive. Exit explicitly destroys it for a real shutdown."""
+        """The window's X button is a full shutdown — same as tray Exit.
+        (It used to just hide the window, which meant 'close and reopen'
+        never actually restarted the backend and NYX kept running when the
+        user thought it was closed.) A backend started outside the tray
+        (terminal) is still left alone, matching Exit's rule."""
         if self._quitting:
-            return True  # let it actually close this time
-        self.window.hide()
-        return False  # cancel the close
+            return True  # teardown already in flight — let it close
+        self._quitting = True
+
+        def _teardown():
+            try:
+                if self.process is not None and self.process.poll() is None:
+                    self.stop_service()          # also stops an Ollama we started
+                else:
+                    self._stop_ollama_if_ours()  # backend wasn't ours — only take our Ollama
+            finally:
+                self._stop_refresh.set()
+                try:
+                    self.icon.stop()
+                except Exception:
+                    pass
+
+        # Heavy teardown off this callback so the window closes instantly
+        threading.Thread(target=_teardown, daemon=True).start()
+        return True  # allow the close
 
     def _open_window(self, path=""):
         if not self.is_running():
@@ -258,6 +344,7 @@ class NyxTrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Start NYX", self.start_service),
             pystray.MenuItem("Stop NYX", self.stop_service),
+            pystray.MenuItem("Restart NYX", self.restart_service),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open NYX", self.open_dashboard),
             pystray.MenuItem("Open Settings", self.open_settings),
@@ -271,6 +358,7 @@ class NyxTrayApp:
         # exiting the tray shouldn't kill a server you started yourself in a terminal.
         if self.process is not None and self.process.poll() is None:
             self.stop_service()
+        self._stop_ollama_if_ours()
         self._stop_refresh.set()
         self._quitting = True
         if self.window is not None:
@@ -280,6 +368,14 @@ class NyxTrayApp:
     def _run_tray(self):
         """Runs on the thread pywebview spawns for us via webview.start()."""
         threading.Thread(target=self._refresh_loop, daemon=True).start()
+        # Give the window a moment to render then bring it to front.
+        # On slower machines the window can open behind other apps.
+        def _bring_to_front():
+            time.sleep(1.5)
+            if self.window is not None:
+                self.window.restore()
+                self.window.show()
+        threading.Thread(target=_bring_to_front, daemon=True).start()
         self.icon.run()
 
     def run(self):

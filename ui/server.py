@@ -14,6 +14,7 @@ import json
 import uuid
 import random
 import platform
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,9 @@ import config
 from core.agent import NyxAgent
 from core.constellation_manager import constellation
 from core import model_manager
+from core import music_store
+from core import plugin_registry
+from core import agents_store
 from core import storage_provider
 from core import app_settings
 from core import event_log
@@ -45,14 +49,89 @@ log = get_logger(__name__)
 
 app = FastAPI(title="Nyx API", version="1.0.0")
 
+# Only the local dashboard (served by this server or the Vite dev server) may
+# call the API from a browser. A wildcard here would let any website you visit
+# silently read memories, send chats, and trigger desktop actions via your browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8000", "http://localhost:8000",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 agent = NyxAgent()
+
+
+@app.on_event("startup")
+async def _start_background_loops():
+    """Reminder scheduler — reminders used to be write-only: stored and
+    displayed but nothing ever checked due_at, so they never notified."""
+    import asyncio
+
+    # Music voice control: the player runs in the browser, so chat/voice
+    # commands are pushed to it over the voice WebSocket. agent.handle()
+    # runs on an executor thread — hand the coroutine back to this loop.
+    loop = asyncio.get_event_loop()
+
+    def _music_broadcast(payload: dict):
+        asyncio.run_coroutine_threadsafe(
+            voice_ws.broadcast({"type": "music_command", **payload}), loop
+        )
+
+    from tools.system import music_control
+    music_control.register(_music_broadcast, lambda: len(voice_ws.clients) > 0)
+
+    async def reminder_loop():
+        from tools.system.notifications import notify
+        while True:
+            try:
+                for r in reminders_store.due_unfired():
+                    reminders_store.mark_fired(r["id"])
+                    log.info(f"[reminders] Firing: {r['name']}")
+                    event_log.log_event("reminders", f"Reminder due: {r['name']}")
+                    # Toast blocks until dismissed — keep it off the event loop
+                    asyncio.get_event_loop().run_in_executor(
+                        None, notify, "Reminder", r["name"], "general"
+                    )
+                    await voice_ws.broadcast({"type": "reminder_due", "reminder": r})
+            except Exception as e:
+                log.warning(f"[reminders] Scheduler error (non-fatal): {e}")
+            await asyncio.sleep(20)
+
+    asyncio.get_event_loop().create_task(reminder_loop())
+
+    async def watch_folder_loop():
+        """Auto-import new audio dropped into watched folders (Music page →
+        Uploads tab). Files are copied into the library; originals stay."""
+        while True:
+            try:
+                if plugin_registry.is_installed("music") and music_store.list_watch_folders():
+                    added = await loop.run_in_executor(None, music_store.scan_all_watch_folders)
+                    if added:
+                        event_log.log_event(
+                            "music", f"Auto-imported {len(added)} track{'s' if len(added) != 1 else ''}",
+                            ", ".join(t["title"] for t in added[:5]))
+                        await voice_ws.broadcast({"type": "music_library_changed"})
+            except Exception as e:
+                log.warning(f"[music] Watch loop error (non-fatal): {e}")
+            await asyncio.sleep(45)
+
+    asyncio.get_event_loop().create_task(watch_folder_loop())
+
+
+@app.on_event("shutdown")
+async def _shutdown_cleanup():
+    """Release everything NYX itself spawned so a graceful stop (Ctrl+C,
+    uvicorn reload, tray Stop) never leaves an orphaned automation browser."""
+    try:
+        from frameworks.openclaw.browser import close_browser
+        close_browser()
+    except Exception as e:
+        log.warning(f"[shutdown] Browser cleanup failed: {e}")
+    event_log.log_event("system", "System Shutdown", "Nyx Core stopped cleanly.")
 
 FRONTEND_ROOT = ROOT_DIR / "nyx_frontend"
 FRONTEND_DIST = FRONTEND_ROOT / "dist"
@@ -61,10 +140,27 @@ FRONTEND_DIR  = FRONTEND_DIST if FRONTEND_DIST.exists() else FRONTEND_ROOT
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
+# Static room assets for the Agents plugin (CC0 3D models). Vite copies
+# public/room-assets -> dist/room-assets; serve it so the SPA fallback
+# doesn't swallow the .glb requests. In dev the Vite server handles this.
+_ROOM_ASSETS = FRONTEND_DIR / "room-assets"
+if _ROOM_ASSETS.exists():
+    app.mount("/room-assets", StaticFiles(directory=str(_ROOM_ASSETS)), name="room-assets")
+
 # ── Voice audio output directory (served as static files) ──
 VOICE_OUTPUTS = ROOT_DIR / "voice" / "outputs"
 VOICE_OUTPUTS.mkdir(parents=True, exist_ok=True)
 app.mount("/voice-audio", StaticFiles(directory=str(VOICE_OUTPUTS)), name="voice-audio")
+
+# Generated TTS clips are one-shot — purge anything older than a week on
+# startup so the folder doesn't grow forever.
+_audio_cutoff = time.time() - 7 * 24 * 3600
+for _f in list(VOICE_OUTPUTS.glob("*.mp3")) + list(VOICE_OUTPUTS.glob("*.wav")):
+    try:
+        if _f.stat().st_mtime < _audio_cutoff:
+            _f.unlink()
+    except OSError:
+        pass
 
 # ── WebSocket manager — pushes events to connected browser tabs ──
 class VoiceWSManager:
@@ -131,33 +227,43 @@ async def voice_respond(req: VoiceTranscriptRequest):
 
     from voice.text_to_speech import speak_to_file
 
-    # Generate acknowledgment audio (short phrase, plays while AI thinks)
-    ack_phrase = random.choice(ACK_PHRASES)
-    ack_url    = None
-    try:
-        ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
-        result   = speak_to_file(ack_phrase, ack_path)
-        if result and result.exists():
-            ack_url = f"/voice-audio/{result.name}"
-    except Exception as exc:
-        log.warning(f"ACK TTS failed: {exc}")
-
-    # Route through AI agent — off the event loop, agent.handle() makes
-    # blocking network calls (Ollama) that would otherwise freeze every
-    # other request on this server until it finishes.
     import asyncio
     loop = asyncio.get_event_loop()
-    response_text = await loop.run_in_executor(None, agent.handle, transcript)
 
-    # Generate response TTS
-    audio_url = None
-    try:
-        resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
-        result    = speak_to_file(response_text, resp_path)
-        if result and result.exists():
-            audio_url = f"/voice-audio/{result.name}"
-    except Exception as exc:
-        log.warning(f"TTS generation failed: {exc}")
+    # Acknowledgment audio (short phrase, plays while AI thinks)
+    ack_phrase = random.choice(ACK_PHRASES)
+
+    def _gen_ack() -> str | None:
+        try:
+            ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
+            result   = speak_to_file(ack_phrase, ack_path)
+            if result and result.exists():
+                return f"/voice-audio/{result.name}"
+        except Exception as exc:
+            log.warning(f"ACK TTS failed: {exc}")
+        return None
+
+    # The ack TTS and the AI reply don't depend on each other — run both off
+    # the event loop (they make blocking network calls that would otherwise
+    # freeze every other request) and at the same time, instead of paying for
+    # them back-to-back.
+    ack_url, response_text = await asyncio.gather(
+        loop.run_in_executor(None, _gen_ack),
+        loop.run_in_executor(None, agent.handle, transcript),
+    )
+
+    # Generate response TTS — also off the event loop
+    def _gen_response_tts() -> str | None:
+        try:
+            resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
+            result    = speak_to_file(response_text, resp_path)
+            if result and result.exists():
+                return f"/voice-audio/{result.name}"
+        except Exception as exc:
+            log.warning(f"TTS generation failed: {exc}")
+        return None
+
+    audio_url = await loop.run_in_executor(None, _gen_response_tts)
 
     payload = {
         "transcript":    transcript,
@@ -252,7 +358,7 @@ async def serve_dashboard():
     <body>
         <div class="orb"></div>
         <h1>NYX</h1>
-        <p>Frontend fallback loaded. Create ui/frontend/index.html later.</p>
+        <p>Frontend fallback loaded. Build the dashboard: cd nyx_frontend &amp;&amp; npm run build</p>
     </body>
     </html>
     """
@@ -306,19 +412,23 @@ async def system_stats():
         gpu_info = {"available": False, "usage": None, "name": None,
                     "vram_used_mb": None, "vram_total_mb": None, "temp_c": None}
         try:
-            import GPUtil
-            gpus = GPUtil.getGPUs()
-            if gpus:
-                g = gpus[0]
+            result = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                parts = [p.strip() for p in result.stdout.strip().split(",")]
                 gpu_info = {
                     "available":     True,
-                    "usage":         round(g.load * 100, 1),
-                    "name":          g.name,
-                    "vram_used_mb":  round(g.memoryUsed),
-                    "vram_total_mb": round(g.memoryTotal),
-                    "temp_c":        g.temperature,
+                    "name":          parts[0],
+                    "vram_used_mb":  int(parts[1]),
+                    "vram_total_mb": int(parts[2]),
+                    "temp_c":        int(parts[3]),
+                    "usage":         int(parts[4]),
                 }
-        except ImportError:
+        except Exception:
             pass
 
         freq = psutil.cpu_freq()
@@ -578,10 +688,14 @@ async def net_status():
 
     uptime_sec = int(time.time() - psutil.boot_time())
 
+    # A manual Model Manager assignment for the "main" role overrides the
+    # config.py default — report what routing will actually use.
+    active_model = model_manager.load_assignments().get("main") or config.MODEL_MAIN
+
     result = {
         "offline_mode":    _net_offline,
         "active_provider": config.AI_PROVIDER,
-        "active_model":    config.MODEL_MAIN,
+        "active_model":    active_model,
         "internet":  {"online": inet_ok, "latency_ms": inet_ms},
         "backend":   {"online": True,    "latency_ms": 0},
         "providers": {
@@ -590,21 +704,21 @@ async def net_status():
                 "online":     olla_ok and not _net_offline,
                 "latency_ms": olla_ms,
                 "base_url":   config.OLLAMA_BASE_URL,
-                "model":      config.MODEL_MAIN,
+                "model":      active_model,
                 "is_active":  config.AI_PROVIDER == "ollama" and not _net_offline,
             },
             "openai": {
                 "configured": bool(config.OPENAI_API_KEY),
                 "online":     None,
                 "base_url":   "api.openai.com",
-                "model":      "gpt-4o",
+                "model":      "gpt-4o-mini",  # matches brain/openai_provider.py default
                 "is_active":  config.AI_PROVIDER == "openai" and not _net_offline,
             },
             "claude": {
                 "configured": bool(config.ANTHROPIC_API_KEY),
                 "online":     None,
                 "base_url":   "api.anthropic.com",
-                "model":      "claude-sonnet-4-6",
+                "model":      "claude-sonnet-4-5",  # matches brain/claude_provider.py default
                 "is_active":  config.AI_PROVIDER == "claude" and not _net_offline,
             },
             "offline": {
@@ -617,7 +731,9 @@ async def net_status():
                 "online":     claw_ok and not _net_offline,
                 "latency_ms": claw_ms,
                 "gateway_url": f"ws://{config.OPENCLAW_HOST}:{config.OPENCLAW_PORT}",
-                "model":      "llama3.2:3b",
+                # Read the model OpenClaw is actually configured to use rather
+                # than hardcoding one here.
+                "model":      openclaw_provider._ollama_model(),
                 "is_active":  claw_ok and not _net_offline,
             },
         },
@@ -716,7 +832,9 @@ class ModelPullRequest(BaseModel):
 
 @app.get("/api/models/status")
 async def models_status():
-    return model_manager.get_ollama_status()
+    status = model_manager.get_ollama_status()
+    status["profile"] = model_manager.get_profile()
+    return status
 
 
 @app.get("/api/models/list")
@@ -832,7 +950,11 @@ class NotificationTestRequest(BaseModel):
 @app.post("/api/notifications/test")
 async def notifications_test(req: NotificationTestRequest):
     from tools.system.notifications import notify
-    result = notify(req.title, req.message, category="general")
+    import asyncio
+    # win11toast blocks until the toast times out or is dismissed — keep it
+    # off the event loop so it can't freeze every other request meanwhile.
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, notify, req.title, req.message, "general")
     return {"result": result}
 
 
@@ -884,7 +1006,10 @@ async def update_task(task_id: str, req: TaskUpdateRequest):
     if updates.get("status") == "COMPLETE":
         event_log.log_event("tasks", f"Task complete: {task['name']}")
         from tools.system.notifications import notify
-        notify("Task Complete", task["name"], category="task_complete")
+        import asyncio
+        # Fire-and-forget off the event loop — win11toast blocks until the
+        # toast is dismissed, and the API response shouldn't wait on that.
+        asyncio.get_event_loop().run_in_executor(None, notify, "Task Complete", task["name"], "task_complete")
     return task
 
 
@@ -910,6 +1035,15 @@ async def get_reminders():
 
 @app.post("/api/reminders")
 async def create_reminder(req: ReminderCreateRequest):
+    # Reject unparseable dates here — the scheduler skips them silently,
+    # so a bad one would otherwise sit unfired forever with no visible error.
+    try:
+        datetime.fromisoformat(req.due_at.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"due_at must be an ISO datetime (e.g. 2026-07-06T18:30:00), got '{req.due_at}'",
+        )
     reminder = reminders_store.create_reminder(req.name, req.due_at)
     event_log.log_event("reminders", f"Reminder set: {req.name}")
     return reminder
@@ -921,6 +1055,293 @@ async def delete_reminder(reminder_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Reminder not found")
     return {"status": "deleted"}
+
+
+# ── Music (The Forge) ────────────────────────────────────────────────────────
+
+class TrackUpdateRequest(BaseModel):
+    favorite: bool | None = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+
+
+class PlaylistCreateRequest(BaseModel):
+    name: str
+    track_ids: list[str] = []
+
+
+@app.get("/api/music/library")
+async def music_library():
+    return {
+        "tracks": music_store.list_tracks(),
+        "playlists": music_store.list_playlists(),
+        "allowed_formats": sorted(music_store.ALLOWED_EXTS),
+        "max_file_mb": music_store.MAX_FILE_MB,
+    }
+
+
+@app.post("/api/music/upload")
+async def music_upload(files: list[UploadFile]):
+    added, errors = [], []
+    for f in files:
+        try:
+            content = await f.read()
+            added.append(music_store.add_track(f.filename or "unknown", content))
+        except ValueError as e:
+            errors.append({"file": f.filename, "error": str(e)})
+        except Exception as e:
+            log.error(f"[music] Upload failed for {f.filename}: {e}")
+            errors.append({"file": f.filename, "error": "Upload failed."})
+    if added:
+        event_log.log_event("music", f"Added {len(added)} track{'s' if len(added) != 1 else ''}",
+                            ", ".join(t["title"] for t in added[:5]))
+    return {"added": added, "errors": errors}
+
+
+@app.get("/api/music/file/{track_id}")
+async def music_file(track_id: str):
+    track = music_store.get_track(track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    if track.get("source") == "soundcloud":
+        raise HTTPException(status_code=400, detail="SoundCloud tracks stream via the widget, not a local file")
+    path = music_store.track_path(track)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio file missing on disk")
+    # FileResponse handles Range requests → seeking works in the player
+    return FileResponse(path, media_type=track["media_type"])
+
+
+@app.put("/api/music/track/{track_id}")
+async def music_track_update(track_id: str, req: TrackUpdateRequest):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    track = music_store.update_track(track_id, updates)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return track
+
+
+@app.delete("/api/music/track/{track_id}")
+async def music_track_delete(track_id: str):
+    if not music_store.delete_track(track_id):
+        raise HTTPException(status_code=404, detail="Track not found")
+    return {"status": "deleted"}
+
+
+@app.post("/api/music/playlists")
+async def music_playlist_create(req: PlaylistCreateRequest):
+    playlist = music_store.create_playlist(req.name, req.track_ids)
+    event_log.log_event("music", f"Playlist created: {playlist['name']}")
+    return playlist
+
+
+@app.delete("/api/music/playlists/{playlist_id}")
+async def music_playlist_delete(playlist_id: str):
+    if not music_store.delete_playlist(playlist_id):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return {"status": "deleted"}
+
+
+class PlaylistRenameRequest(BaseModel):
+    name: str
+
+
+class PlaylistTrackRequest(BaseModel):
+    track_id: str
+
+
+@app.put("/api/music/playlists/{playlist_id}")
+async def music_playlist_rename(playlist_id: str, req: PlaylistRenameRequest):
+    pl = music_store.rename_playlist(playlist_id, req.name)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return pl
+
+
+@app.post("/api/music/playlists/{playlist_id}/tracks")
+async def music_playlist_add_track(playlist_id: str, req: PlaylistTrackRequest):
+    pl = music_store.add_to_playlist(playlist_id, req.track_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return pl
+
+
+@app.delete("/api/music/playlists/{playlist_id}/tracks/{track_id}")
+async def music_playlist_remove_track(playlist_id: str, track_id: str):
+    pl = music_store.remove_from_playlist(playlist_id, track_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return pl
+
+
+@app.post("/api/music/playlists/{playlist_id}/banner")
+async def music_playlist_set_banner(playlist_id: str, file: UploadFile):
+    try:
+        content = await file.read()
+        pl = music_store.set_playlist_banner(playlist_id, file.filename or "banner.jpg", content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return pl
+
+
+@app.delete("/api/music/playlists/{playlist_id}/banner")
+async def music_playlist_clear_banner(playlist_id: str):
+    pl = music_store.clear_playlist_banner(playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return pl
+
+
+@app.get("/api/music/banner/{playlist_id}")
+async def music_playlist_banner(playlist_id: str):
+    path = music_store.playlist_banner_path(playlist_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No custom banner")
+    return FileResponse(path, media_type=music_store.banner_media_type(playlist_id))
+
+
+# ── Agents (The Forge → Agents) ──────────────────────────────────────────────
+
+class AgentCreateRequest(BaseModel):
+    name: str
+    personality: str = "Curious"
+    model: str | None = None
+    accent: str = "#7B4DFF"
+
+
+class AgentTaskRequest(BaseModel):
+    task: str
+
+
+class AgentRenameRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/agents")
+async def agents_list():
+    return {"agents": agents_store.list_agents(), "openclaw_online": agents_store.openclaw_online()}
+
+
+@app.get("/api/agents/{agent_id}")
+async def agents_get(agent_id: str):
+    a = agents_store.get_agent(agent_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    a["activity"] = agents_store.get_activity(agent_id)
+    return a
+
+
+@app.post("/api/agents")
+async def agents_create(req: AgentCreateRequest):
+    return agents_store.create_agent(req.name, req.personality, req.model, req.accent)
+
+
+@app.put("/api/agents/{agent_id}")
+async def agents_rename(agent_id: str, req: AgentRenameRequest):
+    a = agents_store.rename_agent(agent_id, req.name)
+    if not a:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return a
+
+
+@app.delete("/api/agents/{agent_id}")
+async def agents_delete(agent_id: str):
+    if not agents_store.delete_agent(agent_id):
+        raise HTTPException(status_code=400, detail="Can't remove this agent")
+    return {"status": "removed"}
+
+
+@app.post("/api/agents/{agent_id}/task")
+async def agents_task(agent_id: str, req: AgentTaskRequest):
+    import asyncio
+    # Real execution (OpenClaw dispatch) is blocking — keep it off the loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, agents_store.assign_task, agent_id, req.task)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Task failed"))
+    event_log.log_event("agents", f"Task run by {agent_id}", req.task[:80])
+    return result
+
+
+# ── Plugins (SageTech MarketPlace) ───────────────────────────────────────────
+
+@app.get("/api/plugins")
+async def plugins_list():
+    return {
+        "marketplace": plugin_registry.get_catalog().get("marketplace", "SageTech MarketPlace"),
+        "plugins": plugin_registry.list_plugins(),
+    }
+
+
+@app.post("/api/plugins/{plugin_id}/install")
+async def plugins_install(plugin_id: str):
+    def event_stream():
+        for progress in plugin_registry.install_stream(plugin_id):
+            yield json.dumps(progress) + "\n"
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.delete("/api/plugins/{plugin_id}")
+async def plugins_uninstall(plugin_id: str):
+    result = plugin_registry.uninstall(plugin_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    event_log.log_event("plugins", f"Plugin removed: {plugin_id}")
+    return result
+
+
+class SoundCloudAddRequest(BaseModel):
+    url: str
+
+
+class WatchFolderRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/music/soundcloud")
+async def music_add_soundcloud(req: SoundCloudAddRequest):
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        # oEmbed lookup is a blocking HTTP call — keep it off the event loop
+        track = await loop.run_in_executor(None, music_store.add_soundcloud_track, req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    event_log.log_event("music", f"SoundCloud saved: {track['title']}")
+    return track
+
+
+@app.get("/api/music/watch-folders")
+async def music_watch_folders():
+    return {"folders": music_store.list_watch_folders()}
+
+
+@app.post("/api/music/watch-folders")
+async def music_watch_folder_add(req: WatchFolderRequest):
+    import asyncio
+    try:
+        folders = music_store.add_watch_folder(req.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Import whatever's already in it, off the event loop
+    loop = asyncio.get_event_loop()
+    added = await loop.run_in_executor(None, music_store.scan_folder, req.path)
+    return {"folders": folders, "imported": len(added)}
+
+
+@app.delete("/api/music/watch-folders")
+async def music_watch_folder_remove(req: WatchFolderRequest):
+    return {"folders": music_store.remove_watch_folder(req.path)}
+
+
+@app.post("/api/music/scan")
+async def music_scan_now():
+    """Manual 'scan watch folders now' — same work the background loop does."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    added = await loop.run_in_executor(None, music_store.scan_all_watch_folders)
+    return {"imported": len(added), "tracks": added}
 
 
 # ── System Logs ──────────────────────────────────────────────────────────────

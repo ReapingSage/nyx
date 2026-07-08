@@ -13,6 +13,15 @@ pywebview>=6.2.1
 # ── Desktop notifications (Windows) ─────────────────
 win11toast>=0.35; sys_platform == "win32"
 
+# ── Desktop automation (keyboard/mouse) ─────────────
+pyautogui>=0.9.54
+
+# ── File deletion → Recycle Bin (never permanent) ───
+send2trash>=1.8.2
+
+# ── Music library metadata (tags + duration) ────────
+mutagen>=1.47.0
+
 # ── Voice — Phase 1 (TTS) ──────────────────────────
 # Primary: works on Python 3.14+, requires internet
 edge-tts>=6.1.9

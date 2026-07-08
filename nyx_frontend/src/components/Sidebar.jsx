@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useBreakpoint } from '../hooks/useBreakpoint.js'
 import { NAV_ITEMS } from '../utils/constants.js'
 
@@ -39,11 +40,107 @@ const ICONS = {
     <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
     <line x1="12" y1="22.08" x2="12" y2="12"/>
   </svg>,
+  music: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16">
+    <path d="M9 18V5l12-2v13"/>
+    <circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+  </svg>,
+  plug: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16">
+    <path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 01-12 0V8zM12 17v5"/>
+  </svg>,
+  agents: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16">
+    <circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0112 0"/><circle cx="17" cy="10" r="2.2"/><path d="M15 20a5 5 0 016-4"/>
+  </svg>,
 }
 
-function NavItems({ activePage, onNavigate }) {
+// One nav row — identical styling to the main NAV_ITEMS buttons so Forge
+// channels are pixel-consistent with the rest of the sidebar.
+function NavButton({ item, active, onNavigate }) {
+  return (
+    <button
+      key={item.id}
+      onClick={() => onNavigate(item.id)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        width: '100%', padding: '12px 20px',
+        background: active
+          ? 'linear-gradient(90deg, rgba(var(--color-primary-rgb),0.22), rgba(var(--color-primary-rgb),0.05))'
+          : 'transparent',
+        border: 'none',
+        borderLeft: `2px solid ${active ? 'var(--color-accent)' : 'transparent'}`,
+        cursor: 'pointer',
+        color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
+        transition: 'all 0.22s ease',
+        boxShadow: active ? '0 0 8px rgba(var(--color-primary-rgb),0.08) inset' : 'none',
+        animation: active ? 'navGlow 2.5s ease-in-out infinite' : 'none',
+      }}
+      onMouseEnter={e => {
+        if (!active) {
+          e.currentTarget.style.background = 'rgba(var(--color-primary-rgb),0.09)'
+          e.currentTarget.style.color = 'var(--color-text-secondary)'
+        }
+      }}
+      onMouseLeave={e => {
+        if (!active) {
+          e.currentTarget.style.background = 'transparent'
+          e.currentTarget.style.color = 'var(--color-text-muted)'
+        }
+      }}
+    >
+      <span style={{ opacity: active ? 1 : 0.6 }}>{ICONS[item.icon]}</span>
+      <span style={{
+        fontFamily: 'Rajdhani, sans-serif', fontSize: 13, fontWeight: 600,
+        letterSpacing: '0.14em', textTransform: 'uppercase',
+      }}>
+        {item.label}
+      </span>
+    </button>
+  )
+}
+
+// THE FORGE — collapsible category; sits below the main nav, above NYX CORE.
+// Its channels come from installed plugins (forgeItems), not a hardcoded list,
+// so the section only appears once you've installed something into it.
+function ForgeSection({ activePage, onNavigate, forgeItems }) {
+  const [open, setOpen] = useState(() => localStorage.getItem('nyx_forge_open') !== '0')
+  const toggle = () => {
+    setOpen(o => {
+      localStorage.setItem('nyx_forge_open', o ? '0' : '1')
+      return !o
+    })
+  }
+  if (!forgeItems || forgeItems.length === 0) return null
+  return (
+    <div style={{ marginTop: 6, borderTop: '1px solid rgba(100,70,200,0.14)', paddingTop: 8 }}>
+      <div
+        onClick={toggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 7,
+          padding: '7px 20px', cursor: 'pointer', userSelect: 'none',
+          color: 'var(--color-text-muted)',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = 'var(--color-text-secondary)' }}
+        onMouseLeave={e => { e.currentTarget.style.color = 'var(--color-text-muted)' }}
+      >
+        <span style={{
+          fontSize: 8, transition: 'transform 0.2s ease',
+          transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', display: 'inline-block',
+        }}>▼</span>
+        <span style={{
+          fontFamily: 'Share Tech Mono, monospace', fontSize: 9,
+          letterSpacing: '0.30em',
+        }}>THE FORGE</span>
+      </div>
+      {open && forgeItems.map(item => (
+        <NavButton key={item.id} item={item} active={activePage === item.id} onNavigate={onNavigate} />
+      ))}
+    </div>
+  )
+}
+
+function NavItems({ activePage, onNavigate, forgeItems }) {
   return (
     <div style={{ flex: 1, padding: '18px 0', overflowY: 'auto' }}>
+      {/* Existing core items */}
       {NAV_ITEMS.map(item => {
         const active = activePage === item.id
         return (
@@ -87,6 +184,10 @@ function NavItems({ activePage, onNavigate }) {
           </button>
         )
       })}
+
+      {/* New collapsible category — above NYX CORE, existing items untouched.
+          Channels come from installed plugins; hidden when none installed. */}
+      <ForgeSection activePage={activePage} onNavigate={onNavigate} forgeItems={forgeItems} />
     </div>
   )
 }
@@ -111,7 +212,7 @@ function SidebarFooter() {
   )
 }
 
-export default function Sidebar({ activePage, onNavigate, sidebarOpen, onCloseSidebar }) {
+export default function Sidebar({ activePage, onNavigate, sidebarOpen, onCloseSidebar, forgeItems }) {
   const isMobile = useBreakpoint()
 
   if (isMobile) {
@@ -149,7 +250,7 @@ export default function Sidebar({ activePage, onNavigate, sidebarOpen, onCloseSi
           display: 'flex', flexDirection: 'column',
           paddingTop: 56,
         }}>
-          <NavItems activePage={activePage} onNavigate={onNavigate} />
+          <NavItems activePage={activePage} onNavigate={onNavigate} forgeItems={forgeItems} />
           <SidebarFooter />
         </nav>
       </>
@@ -167,7 +268,7 @@ export default function Sidebar({ activePage, onNavigate, sidebarOpen, onCloseSi
       boxShadow: '1px 0 0 rgba(100,70,220,0.08)',
       zIndex: 10, position: 'relative',
     }}>
-      <NavItems activePage={activePage} onNavigate={onNavigate} />
+      <NavItems activePage={activePage} onNavigate={onNavigate} forgeItems={forgeItems} />
       <SidebarFooter />
     </nav>
   )

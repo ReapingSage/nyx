@@ -11,7 +11,7 @@ Requirements:
     pip install SpeechRecognition sounddevice requests
 
 Usage (keep running in a separate terminal):
-    cd C:\\Users\\saget\\OneDrive\\Documents\\nyx
+    cd C:\\Users\\saget\\nyx
     python voice/wake_word_listener.py
 
 Stop with Ctrl+C.
@@ -26,7 +26,9 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 WAKE_WORDS  = ['hey nyx', 'hey nix', 'hey nicks']
-BACKEND_URL = 'http://localhost:8000/api/voice/wake'
+# 127.0.0.1, not localhost — avoids Windows' slow IPv6-first resolution
+# (same fix as OLLAMA_BASE_URL in config.py, v1.14)
+BACKEND_URL = 'http://127.0.0.1:8000/api/voice/wake'
 
 VIRTUAL_KEYWORDS = [
     'virtual', 'voicemod', 'voicemeeter', 'vb-audio', 'vb audio',

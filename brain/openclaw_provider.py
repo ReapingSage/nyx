@@ -15,6 +15,7 @@ tasks. Desktop/tool actions will route through OpenClaw's CLI layer.
 """
 
 import json
+import re
 import socket
 import time
 from pathlib import Path
@@ -125,6 +126,8 @@ def ask(message: str, timeout: int = 30) -> tuple[str, float]:
         "model": model,
         "messages": [{"role": "user", "content": message}],
         "stream": False,
+        # Same as ollama_provider — avoid a cold model reload after idle.
+        "keep_alive": "30m",
     }
 
     t0 = time.monotonic()
@@ -165,13 +168,19 @@ def test() -> dict:
     }
 
 
+def _contains_word(text: str, phrases) -> bool:
+    """Whole-word/phrase match. Plain substring matching false-positived
+    constantly — 'rm' fired on 'confirm'/'form', 'reg' on 'regular',
+    'no' on 'now'."""
+    return any(re.search(rf"\b{re.escape(p)}\b", text) for p in phrases)
+
+
 def is_dangerous_command(text: str) -> bool:
     """
     Lightweight safety guard — returns True if the message looks like
     a dangerous system command that OpenClaw should not execute.
     """
-    lower = text.lower()
-    return any(cmd in lower for cmd in SAFE_DENY_COMMANDS)
+    return _contains_word(text.lower(), SAFE_DENY_COMMANDS)
 
 
 # ── Pending confirmation state ────────────────────────────
@@ -181,6 +190,8 @@ _pending: dict = {}
 _CONFIRM_REQUIRED = {
     "open_discord_opera_monitor2",
     "move_window_to_monitor",
+    "delete_file",
+    "kill_process",
 }
 
 _CONFIRM_WORDS = {"yes", "yeah", "yep", "sure", "do it", "go ahead", "confirm", "ok", "okay"}
@@ -192,12 +203,12 @@ _ACTION_DESCRIPTIONS = {
 }
 
 
-def _set_pending(action: str, kwargs: dict | None = None) -> None:
+def _set_pending(action: str, kwargs: dict | None = None, description: str | None = None) -> None:
     global _pending
     _pending = {
         "action":      action,
         "kwargs":      kwargs or {},
-        "description": _ACTION_DESCRIPTIONS.get(action, action),
+        "description": description or _ACTION_DESCRIPTIONS.get(action, action),
     }
 
 
@@ -210,16 +221,14 @@ def is_confirmation_of_pending(message: str) -> bool:
     """True if there is a pending action and the message looks like a confirmation."""
     if not _pending:
         return False
-    lower = message.lower().strip()
-    return any(w in lower for w in _CONFIRM_WORDS)
+    return _contains_word(message.lower().strip(), _CONFIRM_WORDS)
 
 
 def is_cancellation_of_pending(message: str) -> bool:
     """True if there is a pending action and the message looks like a cancellation."""
     if not _pending:
         return False
-    lower = message.lower().strip()
-    return any(w in lower for w in _CANCEL_WORDS)
+    return _contains_word(message.lower().strip(), _CANCEL_WORDS)
 
 
 # ── Intent → action mapping ───────────────────────────────
@@ -252,6 +261,78 @@ _ACTION_INTENTS: list[tuple[list[str], str, dict]] = [
      "move_window_to_monitor", {"title": "Opera GX", "monitor": 1}),
     (["open in opera", "launch opera gx", "open opera gx"],
      "open_opera_url", {"url": "https://google.com"}),
+    # Volume + media keys
+    (["volume up", "turn up the volume", "turn the volume up", "louder"],
+     "volume_up", {}),
+    (["volume down", "turn down the volume", "turn the volume down", "quieter"],
+     "volume_down", {}),
+    (["mute", "unmute"],
+     "mute_toggle", {}),
+    (["pause the music", "pause music", "play music", "resume music",
+      "play pause", "pause playback", "resume playback", "pause the song"],
+     "play_pause", {}),
+    (["next song", "next track", "skip song", "skip track", "skip this song"],
+     "next_track", {}),
+    (["previous song", "previous track", "last song", "go back a song"],
+     "previous_track", {}),
+    # Processes
+    (["top processes", "using my cpu", "eating my cpu", "using my ram",
+      "eating my ram", "using my memory", "hogging my"],
+     "top_processes", {}),
+]
+
+
+# ── Parameterized intents — carry arguments out of the message ────────
+# (compiled regex, action, needs_confirm, kwargs(match), description(match))
+_PARAM_INTENTS: list[tuple] = [
+    (re.compile(r"^(?:can you |please )?(?:type out|type|write out)\s+(.+)$", re.I | re.S),
+     "type_text", False,
+     lambda m: {"text": m.group(1).strip().strip('"')},
+     None),
+    (re.compile(r"^(?:can you |please )?(?:press|hit)\s+(?:the\s+)?([\w\s+]+?)(?:\s+key)?[.!?]?$", re.I),
+     "press_key", False,
+     lambda m: {"key": m.group(1).strip()},
+     None),
+    (re.compile(r"^(?:can you |please )?scroll\s+(up|down)(?:\s+a\s+(?:bit|little))?[.!?]?$", re.I),
+     "mouse_scroll", False,
+     lambda m: {"direction": m.group(1).lower()},
+     None),
+    (re.compile(r"^(?:can you |please )?(double[\s-]?click|right[\s-]?click|click)(?:\s+the\s+mouse)?[.!?]?$", re.I),
+     "mouse_click", False,
+     lambda m: {"button": "right" if "right" in m.group(1).lower() else "left",
+                "double": "double" in m.group(1).lower()},
+     None),
+    (re.compile(r"^(?:can you |please )?create\s+(?:a\s+|new\s+)?file\s+(?:called\s+|named\s+|at\s+)?(.+?)[.!?]?$", re.I),
+     "create_file", False,
+     lambda m: {"path": m.group(1).strip()},
+     None),
+    (re.compile(r"^(?:can you |please )?(?:create|make)\s+(?:a\s+|new\s+)?folder\s+(?:called\s+|named\s+|at\s+)?(.+?)[.!?]?$", re.I),
+     "create_folder", False,
+     lambda m: {"path": m.group(1).strip()},
+     None),
+    # "append to file notes.txt: buy milk" (filename can't contain spaces;
+    # the colon/comma separates it from the text). Also accepts
+    # "append <text> to file <name>".
+    (re.compile(r"^(?:can you |please )?append\s+to\s+(?:the\s+)?file\s+(\S+?)\s*[:,]\s*(.+)$", re.I | re.S),
+     "append_file", False,
+     lambda m: {"path": m.group(1).strip(), "content": m.group(2).strip() + "\n"},
+     None),
+    (re.compile(r"^(?:can you |please )?append\s+(.+?)\s+to\s+(?:the\s+)?file\s+(\S+?)[.!?]?$", re.I | re.S),
+     "append_file", False,
+     lambda m: {"path": m.group(2).strip(), "content": m.group(1).strip() + "\n"},
+     None),
+    (re.compile(r"^(?:can you |please )?move\s+(?:the\s+)?file\s+(.+?)\s+to\s+(.+?)[.!?]?$", re.I),
+     "move_file", False,
+     lambda m: {"src": m.group(1).strip(), "dst": m.group(2).strip()},
+     None),
+    (re.compile(r"^(?:can you |please )?delete\s+(?:the\s+)?(?:file|folder)\s+(.+?)[.!?]?$", re.I),
+     "delete_file", True,
+     lambda m: {"path": m.group(1).strip()},
+     lambda m: f"send '{m.group(1).strip()}' to the Recycle Bin"),
+    (re.compile(r"^(?:can you |please )?(?:kill|end|terminate|close)\s+(?:the\s+)?process\s+(.+?)[.!?]?$", re.I),
+     "kill_process", True,
+     lambda m: {"name": m.group(1).strip()},
+     lambda m: f"terminate every '{m.group(1).strip()}' process"),
 ]
 
 
@@ -285,6 +366,29 @@ def dispatch(message: str) -> tuple[str, float]:
             _clear_pending()
             ms = round((time.monotonic() - t0) * 1000)
             return f"[Nyx] Cancelled: {desc}.", ms
+
+    # ── Parameterized intents (checked first — they carry arguments) ──
+    for pattern, action_name, needs_confirm, build_kwargs, describe in _PARAM_INTENTS:
+        m = pattern.search(message.strip())
+        if not m:
+            continue
+        kwargs = build_kwargs(m)
+        if needs_confirm:
+            _set_pending(action_name, kwargs, description=describe(m) if describe else None)
+            ms = round((time.monotonic() - t0) * 1000)
+            log.info(f"[openclaw] queued for confirmation: {action_name} {kwargs}")
+            return (
+                f"[Nyx] I'm about to: {_pending['description']}. "
+                f"Say yes to confirm or no to cancel.",
+                ms,
+            )
+        log.info(f"[openclaw] dispatching to action: {action_name} {kwargs}")
+        try:
+            result = run_action(action_name, **kwargs)
+        except Exception as e:
+            result = f"[OpenClaw] Action '{action_name}' failed: {e}"
+        ms = round((time.monotonic() - t0) * 1000)
+        return result, ms
 
     # ── Intent matching ───────────────────────────────────
     for triggers, action_name, kwargs in _ACTION_INTENTS:

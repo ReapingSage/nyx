@@ -4,6 +4,9 @@ dist/
 .env.local
 .env.production
 *.log
+# Rotated log backups (nyx.log.1, nyx.log.2) aren't matched by *.log —
+# they contain chat history and must never be committed
+logs/
 .DS_Store
 venv/
 __pycache__/
@@ -42,3 +45,14 @@ memory/app_settings.json
 memory/tasks.json
 memory/reminders.json
 memory/event_log.json
+
+# Vault embedding cache (derived from personal memory notes)
+memory/vault_embeddings.json
+
+# Music library — personal audio files + index, never for the repo
+music/library/
+memory/music_library.json
+# Per-machine plugin + agent install state (fresh installs seed their own)
+memory/plugins.json
+memory/agents.json
+music/banners/

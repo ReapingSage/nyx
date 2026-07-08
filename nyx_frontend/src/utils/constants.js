@@ -22,9 +22,14 @@ export const NAV_ITEMS = [
   { id: 'memory',    label: 'Memory',     icon: 'database' },
   { id: 'network',   label: 'Network',    icon: 'globe' },
   { id: 'models',    label: 'Models',     icon: 'box' },
+  { id: 'plugins',   label: 'Plugins',    icon: 'plug' },
   { id: 'updates',   label: 'Updates',    icon: 'refresh-cw' },
   { id: 'settings',  label: 'Settings',   icon: 'settings' },
 ]
+
+// THE FORGE channels are no longer hardcoded — Sidebar.jsx derives them from
+// which plugins are installed (SageTech MarketPlace). A plugin's catalog
+// `sidebar` field ({section,id,label}) + `icon` drive its entry.
 
 // Maps page id <-> URL path for browser routing (used by App.jsx)
 export const PAGE_PATHS = {
@@ -34,12 +39,18 @@ export const PAGE_PATHS = {
   memory:     '/memory',
   network:    '/network',
   models:     '/models',
+  plugins:    '/plugins',
   updates:    '/updates',
   settings:   '/settings',
   globalview: '/global-view',
+  music:      '/music',
+  agents:     '/agents',
 }
 
 // Initial placeholder shown only until the first real /api/system response arrives.
 export const MOCK_SYSTEM = { cpu: 0, memory: 0, disk: 0, network: 0 }
 
-export const API_URL = 'http://localhost:8000'
+// 127.0.0.1, not localhost — same class of bug as the v1.14 Ollama fix:
+// on Windows "localhost" can resolve to IPv6 (::1) first and stall before
+// falling back to IPv4, and the backend binds to 127.0.0.1.
+export const API_URL = 'http://127.0.0.1:8000'
