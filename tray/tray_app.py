@@ -185,6 +185,7 @@ class NyxTrayApp:
         self.window: "webview.Window | None" = None
         self._stop_refresh = threading.Event()
         self._quitting = False
+        self._teardown_thread: threading.Thread | None = None
         self.icon = pystray.Icon(
             "nyx",
             make_icon_image(),
@@ -307,7 +308,8 @@ class NyxTrayApp:
                     pass
 
         # Heavy teardown off this callback so the window closes instantly
-        threading.Thread(target=_teardown, daemon=True).start()
+        self._teardown_thread = threading.Thread(target=_teardown, daemon=True)
+        self._teardown_thread.start()
         return True  # allow the close
 
     def _open_window(self, path=""):
@@ -388,6 +390,17 @@ class NyxTrayApp:
         self.window.events.closing += self._on_window_closing
 
         webview.start(self._run_tray, debug=False)
+
+        # webview.start() returns as soon as the window is destroyed, but the
+        # X-button close path kills the backend on a background thread so the
+        # window can disappear instantly. main() clears the lock file right
+        # after this call returns — if that happens before the backend is
+        # actually dead, a fast relaunch can see the lock gone, find port
+        # 8000 still briefly held by the dying old process, assume something
+        # is already serving it, and open a window onto a server that's
+        # about to disappear. Wait for teardown to really finish first.
+        if self._teardown_thread is not None:
+            self._teardown_thread.join(timeout=15)
 
 
 def main():
