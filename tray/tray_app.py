@@ -42,6 +42,7 @@ BASE_URL = f"http://{HOST}:{PORT}"
 START_POLL_ATTEMPTS = 30
 START_POLL_INTERVAL = 1.0
 LOCK_FILE = os.path.join(ROOT_DIR, "tray", ".tray.lock")
+BACKEND_LOG_FILE = os.path.join(ROOT_DIR, "logs", "backend.log")
 
 # Ollama host/port come from the same config the backend uses — no second
 # hardcoded copy that can drift.
@@ -212,6 +213,9 @@ class NyxTrayApp:
         try:
             self.ollama_process = subprocess.Popen(
                 [binary, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except OSError:
@@ -230,11 +234,27 @@ class NyxTrayApp:
             self._refresh()  # already running (maybe started elsewhere) — just sync the title
             return
 
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "ui.server:app", "--host", HOST, "--port", str(PORT)],
-            cwd=ROOT_DIR,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
+        # Launched detached (a real double-click has no console at all — not
+        # just a hidden one), sys.executable's stdio handles aren't valid, so
+        # the child inherits nothing usable. Without explicit redirection,
+        # uvicorn's own startup logging (which writes straight to stdout)
+        # throws and kills the subprocess before it ever binds the port —
+        # silently, since there's no console to show the crash on. Route it
+        # to a real log file instead, both to fix that and to make backend
+        # crashes debuggable going forward.
+        os.makedirs(os.path.dirname(BACKEND_LOG_FILE), exist_ok=True)
+        backend_log = open(BACKEND_LOG_FILE, "a", encoding="utf-8")
+        try:
+            self.process = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", "ui.server:app", "--host", HOST, "--port", str(PORT)],
+                cwd=ROOT_DIR,
+                stdin=subprocess.DEVNULL,
+                stdout=backend_log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        finally:
+            backend_log.close()  # child already has its own inherited handle
         self._refresh()
 
     def stop_service(self, _icon=None, _item=None):
