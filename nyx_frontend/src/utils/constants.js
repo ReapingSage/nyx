@@ -22,9 +22,14 @@ export const NAV_ITEMS = [
   { id: 'memory',    label: 'Memory',     icon: 'database' },
   { id: 'network',   label: 'Network',    icon: 'globe' },
   { id: 'models',    label: 'Models',     icon: 'box' },
+  { id: 'plugins',   label: 'Plugins',    icon: 'plug' },
   { id: 'updates',   label: 'Updates',    icon: 'refresh-cw' },
   { id: 'settings',  label: 'Settings',   icon: 'settings' },
 ]
+
+// THE FORGE channels are no longer hardcoded — Sidebar.jsx derives them from
+// which plugins are installed (SageTech MarketPlace). A plugin's catalog
+// `sidebar` field ({section,id,label}) + `icon` drive its entry.
 
 // Maps page id <-> URL path for browser routing (used by App.jsx)
 export const PAGE_PATHS = {
@@ -34,9 +39,12 @@ export const PAGE_PATHS = {
   memory:     '/memory',
   network:    '/network',
   models:     '/models',
+  plugins:    '/plugins',
   updates:    '/updates',
   settings:   '/settings',
   globalview: '/global-view',
+  music:      '/music',
+  agents:     '/agents',
 }
 
 // Initial placeholder shown only until the first real /api/system response arrives.

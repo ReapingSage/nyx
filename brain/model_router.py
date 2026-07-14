@@ -64,8 +64,25 @@ DESKTOP_KEYWORDS = {
     "open vscode", "open vs code", "open visual studio code",
     "open cmd", "open command prompt",
     "close browser",
-    "volume up", "volume down", "mute", "unmute",
-    "scroll", "drag", "drop",
+    "volume up", "volume down", "mute", "unmute", "louder", "quieter",
+    # Media playback (tools/system/media.py)
+    "play music", "pause music", "pause the music", "resume music",
+    "pause the song", "pause playback", "resume playback", "play pause",
+    "next song", "next track", "previous song", "previous track",
+    "skip song", "skip track",
+    # Keyboard/mouse (tools/desktop) — phrases, not bare words, so normal
+    # sentences containing "type"/"press" don't get hijacked
+    "type out", "write out", "press enter", "press tab", "press escape",
+    "press ctrl", "press alt", "press shift", "press the", "hit enter",
+    "scroll", "scroll up", "scroll down", "drag", "drop",
+    # File operations (tools/system/files.py)
+    "create a file", "create file", "new file", "create a folder",
+    "make a folder", "new folder", "delete file", "delete the file",
+    "delete folder", "delete the folder",
+    "append to file", "append to the file", "to file",
+    # Process manager (tools/system/processes.py)
+    "top processes", "using my cpu", "eating my cpu", "using my ram",
+    "eating my ram", "using my memory", "end process", "terminate process",
     "automate", "automation", "desktop task",
     # Opera GX + Discord + monitor control
     "opera gx", "open opera", "launch opera", "new tab in opera", "open in opera",

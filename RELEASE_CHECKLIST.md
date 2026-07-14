@@ -41,12 +41,14 @@ Walk through every section below before calling a build ready. Check items off a
 - [ ] Launching the tray app opens a window titled "NYX" automatically
 - [ ] From the tray menu, **Open Settings** navigates the *same* window to the Settings page (no new browser tab, no second window)
 - [ ] **Open Model Manager** navigates the same window to `/models`
-- [ ] Click the window's **X** (close) button → window disappears, but the tray icon is still there and still says "Running"
-- [ ] Click **Open NYX** from the tray after closing the window → window reappears
+- [ ] Click the window's **X** (close) button → **full shutdown**: window closes, tray icon exits, the backend it started stops (verify no `uvicorn` python process remains), and an Ollama it auto-started stops too
+- [ ] Relaunch the shortcut after closing with X → fresh tray + fresh backend come up cleanly (this is the supported "restart by close-and-reopen" flow)
+- [ ] With a backend started manually in a terminal, click X → window and tray close but the terminal-started backend keeps running (same rule as Exit)
+- [ ] Tray menu **Restart NYX** → backend goes down and comes back up with a new PID, dashboard reachable again after
 - [ ] Confirm no `msedge.exe`/`chrome.exe`/default-browser process ever opens as a side effect of any of the above
 - [ ] **Exit** from the tray fully closes the window and ends the process
 
-**Passing:** Nothing ever opens in a regular browser tab. Closing the window ≠ quitting the app. Exit is the only thing that fully tears it down.
+**Passing:** Nothing ever opens in a regular browser tab. X and Exit both fully tear down everything the tray started — and only what it started. Close-and-reopen always yields a fresh backend.
 
 ---
 

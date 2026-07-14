@@ -1,0 +1,30 @@
+{
+  "marketplace": "SageTech MarketPlace",
+  "schema_version": 1,
+  "updated": "2026-07-07",
+  "plugins": [
+    {
+      "id": "music",
+      "name": "Music",
+      "tagline": "NYX's own local music manager & player",
+      "description": "Upload and organize a local music library, build queues and playlists, save SoundCloud links for one-click replay, auto-import from watch folders, and control everything by voice. Adds The Forge → Music to your sidebar.",
+      "category": "The Forge",
+      "icon": "music",
+      "version": "1.0.0",
+      "author": "SageTech",
+      "size_mb": 0,
+      "source": "bundled",
+      "download_url": null,
+      "python_deps": ["mutagen"],
+      "requires_restart": true,
+      "sidebar": { "section": "THE FORGE", "id": "music", "label": "Music" },
+      "features": [
+        "Local library with drag & drop upload (MP3, WAV, FLAC, M4A, OGG)",
+        "Playlists, play queue, favorites",
+        "SoundCloud links — save once, replay forever",
+        "Watch folders — auto-import dropped audio",
+        "Voice & chat control (\"play after dark\", \"pause the music\")"
+      ]
+    }
+  ]
+}

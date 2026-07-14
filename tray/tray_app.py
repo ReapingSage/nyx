@@ -12,8 +12,9 @@ port, and Stop can shut down an instance it didn't itself start.
 
 Threading model: pywebview owns the main thread (webview.start() blocks
 there). The tray icon (pystray) runs on a thread pywebview spawns for us.
-Closing the NYX window hides it instead of destroying it, so the GUI loop
-— and the tray icon — keep running until you choose Exit.
+Closing the NYX window (X) is a full shutdown — backend, tray icon, and
+any Ollama this app started all stop, so close-and-reopen gives a fresh
+backend. The tray menu also has Restart NYX for a one-click restart.
 """
 
 import sys
@@ -252,6 +253,15 @@ class NyxTrayApp:
         self._stop_ollama_if_ours()
         self._refresh()
 
+    def restart_service(self, _icon=None, _item=None):
+        """One-click backend restart — what 'close and reopen' was being
+        used for. Stops whatever is running (including a terminal-started
+        instance, since a restart is explicitly requested) and starts fresh."""
+        self.stop_service()
+        self.start_service()
+        self._wait_until_ready()
+        self._refresh()
+
     def _wait_until_ready(self):
         """After starting, give the server a moment to actually bind the port
         before pointing a window at it."""
@@ -274,13 +284,31 @@ class NyxTrayApp:
     # ── Native window actions ────────────────────────────────
 
     def _on_window_closing(self):
-        """Closing the window (the X button) hides it instead of destroying
-        it — that keeps pywebview's GUI loop (and the tray icon riding on
-        it) alive. Exit explicitly destroys it for a real shutdown."""
+        """The window's X button is a full shutdown — same as tray Exit.
+        (It used to just hide the window, which meant 'close and reopen'
+        never actually restarted the backend and NYX kept running when the
+        user thought it was closed.) A backend started outside the tray
+        (terminal) is still left alone, matching Exit's rule."""
         if self._quitting:
-            return True  # let it actually close this time
-        self.window.hide()
-        return False  # cancel the close
+            return True  # teardown already in flight — let it close
+        self._quitting = True
+
+        def _teardown():
+            try:
+                if self.process is not None and self.process.poll() is None:
+                    self.stop_service()          # also stops an Ollama we started
+                else:
+                    self._stop_ollama_if_ours()  # backend wasn't ours — only take our Ollama
+            finally:
+                self._stop_refresh.set()
+                try:
+                    self.icon.stop()
+                except Exception:
+                    pass
+
+        # Heavy teardown off this callback so the window closes instantly
+        threading.Thread(target=_teardown, daemon=True).start()
+        return True  # allow the close
 
     def _open_window(self, path=""):
         if not self.is_running():
@@ -316,6 +344,7 @@ class NyxTrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Start NYX", self.start_service),
             pystray.MenuItem("Stop NYX", self.stop_service),
+            pystray.MenuItem("Restart NYX", self.restart_service),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open NYX", self.open_dashboard),
             pystray.MenuItem("Open Settings", self.open_settings),

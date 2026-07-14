@@ -10,6 +10,7 @@ import NyxIdleOrb   from './components/NyxIdleOrb.jsx'
 import LeftPanels   from './components/LeftPanels.jsx'
 import RightPanels  from './components/RightPanels.jsx'
 import NyxChat              from './components/NyxChat.jsx'
+import CalendarOverlay      from './components/CalendarOverlay.jsx'
 import MemoryConstellation  from './components/MemoryConstellation.jsx'
 import NetworkPage          from './components/NetworkPage.jsx'
 import GlobalView           from './components/GlobalView.jsx'
@@ -18,8 +19,16 @@ import SystemsPage          from './components/SystemsPage.jsx'
 import TasksPage            from './components/TasksPage.jsx'
 import UpdatesPage          from './components/UpdatesPage.jsx'
 import ModelManagerPage     from './components/ModelManagerPage.jsx'
+import MusicPage            from './components/MusicPage.jsx'
+import PluginsPage         from './components/PluginsPage.jsx'
+import AgentsPage          from './components/AgentsPage.jsx'
+import CommandPalette      from './components/CommandPalette.jsx'
+// Side effect: boots the persistent music engine + its voice-command WS
+// listener, so "play X" works even before the Music page is opened.
+import './utils/musicPlayer.js'
 import { useTheme, NYX_PURPLE_FREEZE } from './utils/themeContext.jsx'
 import { PAGE_PATHS } from './utils/constants.js'
+import { getPlugins } from './services/api.js'
 
 const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_PATHS).map(([page, path]) => [path, page]))
 
@@ -42,6 +51,23 @@ export default function App() {
   const [win,          setWin]          = useState({ w: window.innerWidth, h: window.innerHeight })
   const [voiceStatus,  setVoiceStatus]  = useState('IDLE')
   const [sidebarOpen,  setSidebarOpen]  = useState(false)
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [forgeItems,   setForgeItems]   = useState([])   // installed-plugin sidebar channels
+
+  // Which plugins are installed → drives THE FORGE sidebar section.
+  useEffect(() => {
+    let alive = true
+    getPlugins()
+      .then(data => {
+        if (!alive) return
+        const items = (data.plugins || [])
+          .filter(p => p.installed && p.sidebar)
+          .map(p => ({ id: p.sidebar.id, label: p.sidebar.label, icon: p.icon }))
+        setForgeItems(items)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
   const voiceCtrlRef  = useRef(null)
   const idleTimerRef  = useRef(null)
   const isMobile = useBreakpoint()
@@ -244,6 +270,7 @@ export default function App() {
             onNavigate={handleNav}
             sidebarOpen={sidebarOpen}
             onCloseSidebar={() => setSidebarOpen(false)}
+            forgeItems={forgeItems}
           />
 
           {/* ── MAIN CONTENT ── */}
@@ -282,6 +309,12 @@ export default function App() {
                     <TasksPage />
                   ) : activePage === 'updates' ? (
                     <UpdatesPage />
+                  ) : activePage === 'plugins' ? (
+                    <PluginsPage />
+                  ) : activePage === 'music' ? (
+                    <MusicPage />
+                  ) : activePage === 'agents' ? (
+                    <AgentsPage />
                   ) : (
                     <>
                       {!isMobile && <LeftPanels visible />}
@@ -311,6 +344,7 @@ export default function App() {
                           onActivate={enterChat}
                           onVoiceTrigger={handleMicToggle}
                           voiceActive={voiceStatus !== 'IDLE'}
+                          onOpenCalendar={() => setCalendarOpen(true)}
                         />
 
                         {/* Status text — shows voice phase when active */}
@@ -388,7 +422,7 @@ export default function App() {
           left:    orbL,
           top:     orbT,
           scale:   orbScale,
-          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates','models'].includes(activePage)) ? 0 : 1),
+          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates','models','music','plugins','agents'].includes(activePage)) ? 0 : 1),
         }}
         transition={{
           type: 'spring',
@@ -406,8 +440,12 @@ export default function App() {
           cursor: 'default',
         }}
       >
-        {/* Circular click zone — active mode only (idle overlay handles idle clicks) */}
-        {!chatMode && !idleScreen && (
+        {/* Circular click zone — ONLY on the dashboard, where the orb is
+            actually visible. It used to render on every non-chat page, so an
+            invisible 180px hotspot sat dead-center on Music/Agents/Settings/
+            etc, eating clicks and yanking you into chat mode ("stuck in core
+            mode"). Gate it to the dashboard so other tabs are fully usable. */}
+        {!chatMode && !idleScreen && activePage === 'dashboard' && (
           <div
             onClick={enterChat}
             style={{
@@ -470,6 +508,14 @@ export default function App() {
         </AnimatePresence>
       </motion.div>
 
+      {/* CALENDAR overlay — root level so it stacks above the fixed orb
+          layer (zIndex 200); inside the zIndex-1 UI container it would
+          always render underneath the orb no matter its own z-index. */}
+      <CalendarOverlay open={calendarOpen} onClose={() => setCalendarOpen(false)} />
+
+      {/* Universal search — Ctrl+K from anywhere */}
+      <CommandPalette onNavigate={handleNav} onOpenCalendar={() => setCalendarOpen(true)} />
+
     </div>
   )
 }
@@ -488,10 +534,39 @@ function SyncWrap({ locked, children }) {
 
 // ── Sub-components ────────────────────────────────
 
-function ControlButtons({ onActivate, onVoiceTrigger, voiceActive }) {
+// Mini calendar glyph for the dashboard button — shows the real current
+// day-of-month and rolls over at midnight without a refresh.
+function MiniCalendarIcon() {
+  const [day, setDay] = useState(() => new Date().getDate())
+  useEffect(() => {
+    const id = setInterval(() => {
+      const d = new Date().getDate()
+      setDay(prev => (prev === d ? prev : d))
+    }, 30_000)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div style={{
+      width: 21, height: 21, borderRadius: 5, position: 'relative',
+      border: '1px solid rgba(199,166,255,0.8)',
+      background: 'rgba(18,12,40,0.95)',
+      boxShadow: '0 0 10px rgba(140,80,255,0.35)',
+      overflow: 'hidden', pointerEvents: 'none',
+    }}>
+      <div style={{ height: 6, background: 'linear-gradient(90deg, #7B4DFF, #B96CFF)' }} />
+      <div style={{
+        fontFamily: 'Rajdhani, sans-serif', fontSize: 11, fontWeight: 700,
+        color: '#F3EDFF', textAlign: 'center', lineHeight: '14px',
+        textShadow: '0 0 8px rgba(199,166,255,0.7)',
+      }}>{day}</div>
+    </div>
+  )
+}
+
+function ControlButtons({ onActivate, onVoiceTrigger, voiceActive, onOpenCalendar }) {
   const btns = [
     { icon: voiceActive ? '⏹' : '🎤', label: 'Voice', action: onVoiceTrigger, active: voiceActive },
-    { icon: '⌨',  label: 'Command',  action: onActivate },
+    { icon: <MiniCalendarIcon />, label: 'Calendar', action: onOpenCalendar },
     { icon: '≋',  label: 'Waveform', action: onActivate },
     { icon: '⋮⋮', label: 'Grid',     action: onActivate },
   ]

@@ -59,13 +59,16 @@ function Message({ msg }) {
           borderLeft: isNyx ? '2px solid #a78bfa' : 'none',
           borderRight: isNyx ? 'none' : '2px solid #6d28d9',
           background: isNyx ? 'rgba(11,11,26,0.75)' : 'rgba(76,29,149,0.15)',
+          // Let the user select + copy message text (WebView defaults to off)
+          userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text',
         }}
       >
-        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: isNyx ? '#a78bfa' : '#6d28d9', letterSpacing: '0.12em', marginBottom: 5 }}>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: isNyx ? '#a78bfa' : '#6d28d9', letterSpacing: '0.12em', marginBottom: 5, userSelect: 'none' }}>
           {isNyx ? 'NYX' : 'YOU'}
           {msg.model && <span style={{ color: '#4a4680', marginLeft: 8 }}>{msg.model}</span>}
         </div>
-        <div style={{ fontSize: 13, color: '#e2e0ff', lineHeight: 1.6, fontFamily: 'Exo 2, sans-serif' }} className="nyx-markdown">
+        <div style={{ fontSize: 13, color: '#e2e0ff', lineHeight: 1.6, fontFamily: 'Exo 2, sans-serif',
+          userSelect: 'text', WebkitUserSelect: 'text' }} className="nyx-markdown">
           <ReactMarkdown>{msg.text}</ReactMarkdown>
         </div>
       </div>
@@ -153,14 +156,19 @@ export default function ChatOverlay({ visible, onOrbStateChange, onVoiceStatus, 
             : '80px 380px 20px 240px',
           display: 'flex',
           flexDirection: 'column',
-          justifyContent: 'flex-end',
           pointerEvents: 'auto',
         }}
       >
-        <AnimatePresence initial={false}>
-          {messages.map(msg => <Message key={msg.id} msg={msg} />)}
-          {thinking && <TypingIndicator key="typing" />}
-        </AnimatePresence>
+        {/* marginTop:auto pins messages to the bottom when there are only a
+            few, but lets the list scroll fully once it overflows. The old
+            justify-content:flex-end clipped older messages out of scroll
+            reach — the top of the history became unreachable. */}
+        <div style={{ marginTop: 'auto' }}>
+          <AnimatePresence initial={false}>
+            {messages.map(msg => <Message key={msg.id} msg={msg} />)}
+            {thinking && <TypingIndicator key="typing" />}
+          </AnimatePresence>
+        </div>
       </div>
 
       {/* Input bar */}
