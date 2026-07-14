@@ -58,9 +58,28 @@ Write-Host ""
 Write-Header "Locating NYX..."
 
 $ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Double-clicking a downloaded .zip opens a browse-only view in Explorer,
+# backed by a temp cache that only materializes files as you open them —
+# running setup from inside it silently leaves files like config.py missing
+# on disk even though they show up fine in the file listing. Catch it early
+# with a clear message instead of a confusing crash later.
+if ($ScriptDir -match '\.zip\\') {
+    Write-Fail "This is running from inside a .zip Explorer is just browsing, not a real extracted folder."
+    Write-Fail "Right-click the downloaded .zip -> 'Extract All...', then run setup.bat from the extracted folder."
+    pause; exit 1
+}
+
 $IsInsideRepo = Test-Path (Join-Path $ScriptDir "ui\server.py")
 
 if ($IsInsideRepo) {
+    $requiredFiles = @("config.py", "requirements.txt", "tray\tray_app.py")
+    $missing = $requiredFiles | Where-Object { -not (Test-Path (Join-Path $ScriptDir $_)) }
+    if ($missing.Count -gt 0) {
+        Write-Fail "Files are missing from this folder: $($missing -join ', ')"
+        Write-Fail "This usually means the .zip wasn't fully extracted. Right-click it -> 'Extract All...' and re-run setup from there."
+        pause; exit 1
+    }
     $NYX_DIR = $ScriptDir
     Write-OK "Already inside the NYX repo at: $NYX_DIR"
 } else {
