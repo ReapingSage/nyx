@@ -18,6 +18,12 @@ NYX is a local-first AI desktop assistant. It runs entirely on your own machine 
 
 ## Installation
 
+### Quick install on Windows (no Git experience needed)
+
+Use GitHub's **Code → Download ZIP** button, then **right-click the downloaded `.zip` → "Extract All..."** to a real folder. Double-click `setup.bat` from inside that extracted folder.
+
+> Don't just double-click the `.zip` itself and run `setup.bat` from the preview window it opens — that's a browse-only view backed by a temp cache, and files like `config.py` can end up missing on disk even though they appear in the listing, causing NYX to crash on launch. Always Extract All first.
+
 ### 1. Clone the repo
 
 ```
