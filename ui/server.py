@@ -417,6 +417,7 @@ async def system_stats():
                  "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if result.returncode == 0:
                 parts = [p.strip() for p in result.stdout.strip().split(",")]

@@ -24,6 +24,7 @@ To check out any version: `git checkout v1.6` (or `git checkout v1.6-lite`).
 | v1.12 | v1.12-lite | Replaced every remaining placeholder with real functionality (Voice, Notifications, Privacy, Backup, Logs, Tasks, Reminders, etc.) |
 | v1.13 | v1.13-lite | Added RELEASE_CHECKLIST.md |
 | v1.14 | v1.14-lite | Fixed ~2s delay on every Ollama call (`localhost` → `127.0.0.1`) — found via the release checklist pass |
+| v1.17 | | Fixed backend silently crashing on a real double-click launch (unredirected subprocess stdio), a fast-relaunch race that could open a window onto a dying backend, a zip-preview footgun in setup.ps1, and flashing console windows every ~3.5s from unhidden `nvidia-smi` polling |
 
 Blank cells under "laptop-lite" mean that version landed on `main` and got folded into the *next* laptop-lite catch-up merge rather than getting its own tag (e.g. v1.11's native window work shipped to laptop-lite together with v1.12, both arriving in the same merge — so there's no separate "v1.11-lite").
 
