@@ -53,21 +53,41 @@ def _first_run_seed() -> dict:
 
 # ── Catalog ───────────────────────────────────────────────────────────
 
-def get_catalog() -> dict:
-    """Live catalog from the SageTech repo, or the bundled copy if offline."""
-    try:
-        r = requests.get(CATALOG_URL, timeout=5)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("plugins") is not None:
-            return data
-    except Exception as e:
-        log.info(f"[plugins] Using bundled catalog (remote fetch failed: {e})")
+def _read_bundled_catalog() -> dict:
     try:
         return json.loads(BUNDLED_CATALOG.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         log.warning(f"[plugins] Bundled catalog unreadable: {e}")
         return {"marketplace": "SageTech MarketPlace", "plugins": []}
+
+
+def get_catalog() -> dict:
+    """Live catalog from the SageTech repo, merged with the bundled copy.
+
+    First-party bundled plugins (source: "bundled" — Music, Agents, etc.)
+    ship with Nyx itself and must never disappear just because the remote
+    fetch happened to succeed and that separate marketplace repo doesn't
+    know about them; a plugin's visibility shouldn't depend on network
+    timing. Remote entries win on id collision (they're the ones meant to
+    be updatable without a Nyx release); everything bundled is guaranteed
+    present either way."""
+    bundled = _read_bundled_catalog()
+    remote = None
+    try:
+        r = requests.get(CATALOG_URL, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("plugins") is not None:
+            remote = data
+    except Exception as e:
+        log.info(f"[plugins] Remote catalog unavailable, using bundled only: {e}")
+
+    if remote is None:
+        return bundled
+
+    merged_ids = {p["id"] for p in remote["plugins"]}
+    merged_plugins = list(remote["plugins"]) + [p for p in bundled["plugins"] if p["id"] not in merged_ids]
+    return {**remote, "plugins": merged_plugins}
 
 
 def get_plugin(plugin_id: str) -> dict | None:

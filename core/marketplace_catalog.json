@@ -25,6 +25,28 @@
         "Watch folders — auto-import dropped audio",
         "Voice & chat control (\"play after dark\", \"pause the music\")"
       ]
+    },
+    {
+      "id": "agents",
+      "name": "Agents",
+      "tagline": "Nyx's real specialized AI workforce",
+      "description": "A live control center for Nyx's real specialized workers — Momus (fact-checking), Hemera (trend tracking), Analyst (reasoning), and OpenClaw (desktop automation) — with real status, provider configuration, API key management, and automatic fallback. Adds The Forge → Agents to your sidebar.",
+      "category": "The Forge",
+      "icon": "agents",
+      "version": "1.0.0",
+      "author": "SageTech",
+      "size_mb": 0,
+      "source": "bundled",
+      "download_url": null,
+      "python_deps": [],
+      "requires_restart": false,
+      "sidebar": { "section": "THE FORGE", "id": "agents", "label": "Agents" },
+      "features": [
+        "Real agent registry — no fabricated agents or example data",
+        "Per-agent provider priority with automatic health-based fallback",
+        "Secure API key management (masked, backend-only, never logged)",
+        "Live status: active, processing, unavailable, missing configuration"
+      ]
     }
   ]
 }

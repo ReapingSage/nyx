@@ -1,10 +1,14 @@
 """
-tools/web/search.py — Explicit web search via DuckDuckGo (no API key needed).
-Triggered only when the user says "search for", "look up", etc.
-Results are fed as context to the LLM so Nyx synthesizes a real answer.
+tools/web/search.py — Explicit web search, Tavily-first with a DuckDuckGo
+fallback (no API key needed for DDG). Triggered only when the user says
+"search for", "look up", etc. Results are fed as context to the LLM so Nyx
+synthesizes a real answer.
 """
 
 import re
+
+import requests
+import config
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -66,17 +70,85 @@ def extract_search_query(text: str) -> str | None:
     return None
 
 
-def search(query: str, max_results: int = 5) -> list[dict]:
-    """Return up to max_results DDG results as [{title, href, body}] dicts."""
+DEFAULT_ORDER = ["tavily", "ddg"]
+
+
+def _search_tavily(query: str, max_results: int) -> list[dict] | None:
+    """Pure call — no retry/fallback logic here, that's provider_router's job.
+
+    Returns None if Tavily simply isn't configured (no key — not a failure,
+    just unavailable). Raises on any real failure (network error, quota,
+    auth, bad response) so the caller can apply health/cooldown tracking.
+    A genuine zero-result search still returns [] (a real answer, not a
+    failure), same as DDG."""
+    if not config.TAVILY_API_KEY:
+        return None
+    r = requests.post(
+        "https://api.tavily.com/search",
+        headers={"Authorization": f"Bearer {config.TAVILY_API_KEY}"},
+        json={"query": query, "max_results": max_results},
+        timeout=10,
+    )
+    if r.status_code == 432:
+        raise RuntimeError(f"Tavily quota exhausted: {r.text[:200]}")
+    r.raise_for_status()
+    results = [
+        {"title": item.get("title", ""), "href": item.get("url", ""), "body": item.get("content", "")}
+        for item in r.json().get("results", [])
+    ]
+    log.info(f"[search] (tavily) '{query}' → {len(results)} results")
+    return results
+
+
+def _search_ddg(query: str, max_results: int) -> list[dict]:
     try:
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=max_results))
-        log.info(f"[search] '{query}' → {len(results)} results")
+        log.info(f"[search] (ddg) '{query}' → {len(results)} results")
         return results
     except Exception as e:
         log.error(f"[search] DDG error for '{query}': {e}")
         return []
+
+
+def search(query: str, max_results: int = 5, agent: str = "search") -> list[dict]:
+    """Walks `agent`'s configured provider order (core/provider_router.py —
+    reorderable per-agent at runtime via tools/system/api_config.py, e.g.
+    "make ddg primary for search") until one returns results.
+
+    `agent` lets callers with their own identity (Momus, Hemera) have
+    independent provider priority/health even though they share this same
+    underlying search call — pass e.g. agent="momus" from a caller that
+    should be tracked separately from the generic "search" bucket.
+
+    Tavily gets real health/cooldown tracking through provider_router — a
+    hard failure benches it for a while instead of retrying every request.
+    DDG is the unconditional final fallback: free, keyless, never benched,
+    so a request can never come back completely empty just because every
+    paid provider is having a bad day."""
+    from core import provider_router
+
+    order = provider_router.get_priority(agent, DEFAULT_ORDER)
+    for provider in order:
+        if provider == "tavily":
+            if not provider_router.is_healthy("tavily"):
+                log.info(f"[search] Skipping tavily for agent '{agent}' — in cooldown")
+                continue
+            try:
+                results = _search_tavily(query, max_results)
+            except Exception as e:
+                log.warning(f"[search] Tavily error for '{query}': {e} — falling back")
+                provider_router.mark_failure("tavily")
+                continue
+            if results is not None:
+                provider_router.mark_success("tavily")
+                return results
+            # None = not configured (no key) — not a failure, just skip.
+        elif provider == "ddg":
+            return _search_ddg(query, max_results)
+
+    return _search_ddg(query, max_results)
 
 
 def build_context(query: str, results: list[dict]) -> str:

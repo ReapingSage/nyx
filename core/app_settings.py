@@ -42,6 +42,13 @@ DEFAULTS = {
     "experimental": {
         "flagship_model_enabled": False,
     },
+    # Per-category provider order — tools/web/search.py walks "search" in
+    # this order, skipping any provider without a configured key, until one
+    # succeeds. "ddg" always works (no key needed) so it's the natural last
+    # resort rather than something that can fail out entirely.
+    "api_priority": {
+        "search": ["tavily", "ddg"],
+    },
 }
 
 

@@ -41,6 +41,11 @@ AI_PROVIDER: str = os.getenv("AI_PROVIDER", "ollama")
 OPENAI_API_KEY:    str = os.getenv("OPENAI_API_KEY",    "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Web search — Tavily is primary when a key is set (real API, 1000 free
+# searches/month), tools/web/search.py falls back to DuckDuckGo (free,
+# keyless, no quota) whenever Tavily is unset, quota-exhausted, or errors.
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
 # ── Personality ───────────────────────────────────────────
 USER_NAME:  str = os.getenv("USER_NAME",  "Anthony")
 NYX_TITLE:  str = os.getenv("NYX_TITLE",  "Master")

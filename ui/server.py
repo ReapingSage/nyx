@@ -37,6 +37,10 @@ from core import model_manager
 from core import music_store
 from core import plugin_registry
 from core import agents_store
+from core import agent_registry
+from core import provider_router
+from core import api_credentials
+from core import memory_rag
 from core import storage_provider
 from core import app_settings
 from core import event_log
@@ -573,6 +577,23 @@ async def sync_constellation():
 @app.get("/api/constellation/export")
 async def export_constellation():
     return constellation.get_export()
+
+
+@app.get("/api/constellation/search")
+async def search_constellation(q: str, limit: int = 10):
+    """Real semantic search over vault chunks + Constellation nodes —
+    core/memory_rag.semantic_search(). Not keyword matching: this embeds
+    the query and ranks by cosine similarity, same pipeline that actually
+    feeds chat retrieval. Empty/whitespace queries are rejected rather than
+    returning an arbitrary top-N with no query behind it."""
+    import asyncio
+    q = q.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Query must not be empty")
+    limit = max(1, min(limit, 50))
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, memory_rag.semantic_search, q, limit)
+    return result
 
 
 @app.post("/api/constellation/open-vault")
@@ -1263,6 +1284,114 @@ async def agents_task(agent_id: str, req: AgentTaskRequest):
         raise HTTPException(status_code=400, detail=result.get("error", "Task failed"))
     event_log.log_event("agents", f"Task run by {agent_id}", req.task[:80])
     return result
+
+
+# ── Workers (Agents dashboard) ───────────────────────────────────────────────
+# Distinct namespace from /api/agents above on purpose — agents_store.py is a
+# separate, older system (user-created OpenClaw task-agents). This backs the
+# real specialized workers: Momus, Hemera, Analyst, OpenClaw. Local-only
+# surface — no auth layer exists anywhere else in Nyx either, so this matches
+# the app's existing single-user security model rather than inventing a new
+# one; nothing about it is reachable from Sagefall-sentinel (a separate app)
+# or any other public-facing route.
+
+class WorkerKeyRequest(BaseModel):
+    provider: str
+    key: str
+
+
+class WorkerPriorityRequest(BaseModel):
+    order: list[str]
+
+
+def _require_agent(agent_id: str) -> dict:
+    meta = agent_registry.AGENTS.get(agent_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+    return meta
+
+
+def _require_provider(meta: dict, provider_id: str) -> None:
+    if provider_id not in meta["providers"]:
+        raise HTTPException(status_code=400, detail=f"'{provider_id}' isn't a provider this agent supports")
+
+
+@app.get("/api/workers")
+async def workers_list():
+    return {"workers": agent_registry.list_agents()}
+
+
+@app.get("/api/workers/{agent_id}")
+async def workers_get(agent_id: str):
+    _require_agent(agent_id)
+    return agent_registry.get_agent(agent_id)
+
+
+@app.post("/api/workers/{agent_id}/providers/key")
+async def workers_set_key(agent_id: str, req: WorkerKeyRequest):
+    meta = _require_agent(agent_id)
+    _require_provider(meta, req.provider)
+    if not meta["providers"][req.provider]["requires_key"]:
+        raise HTTPException(status_code=400, detail=f"'{req.provider}' doesn't use an API key")
+    message = api_credentials.set_key(req.provider, req.key)
+    if message.startswith("[Nyx] Saved"):
+        return {"ok": True, "message": message, "worker": agent_registry.get_agent(agent_id)}
+    raise HTTPException(status_code=400, detail=message)
+
+
+@app.delete("/api/workers/{agent_id}/providers/{provider_id}/key")
+async def workers_remove_key(agent_id: str, provider_id: str):
+    meta = _require_agent(agent_id)
+    _require_provider(meta, provider_id)
+    message = api_credentials.remove_key(provider_id)
+    return {"ok": True, "message": message, "worker": agent_registry.get_agent(agent_id)}
+
+
+@app.post("/api/workers/{agent_id}/priority")
+async def workers_set_priority(agent_id: str, req: WorkerPriorityRequest):
+    meta = _require_agent(agent_id)
+    for p in req.order:
+        _require_provider(meta, p)
+    # Every provider this agent supports must stay reachable — a reorder
+    # can't silently drop one, only change the sequence.
+    if set(req.order) != set(meta["providers"]):
+        raise HTTPException(status_code=400, detail="Order must include every provider this agent supports")
+    provider_router.set_priority(agent_id, req.order)
+    event_log.log_event("workers", f"{meta['name']} provider priority changed", " → ".join(req.order))
+    return {"ok": True, "worker": agent_registry.get_agent(agent_id)}
+
+
+@app.post("/api/workers/{agent_id}/providers/{provider_id}/test")
+async def workers_test_provider(agent_id: str, provider_id: str):
+    import asyncio
+    meta = _require_agent(agent_id)
+    _require_provider(meta, provider_id)
+    loop = asyncio.get_event_loop()
+
+    if provider_id == "tavily":
+        if not api_credentials.is_configured("tavily"):
+            return {"ok": False, "message": "No Tavily key configured."}
+        try:
+            from tools.web.search import _search_tavily
+            results = await loop.run_in_executor(None, _search_tavily, "connection test", 1)
+            provider_router.mark_success("tavily")
+            event_log.log_event("workers", f"{meta['name']}: Tavily test succeeded")
+            return {"ok": True, "message": f"Tavily responded ({len(results)} result(s))."}
+        except Exception as e:
+            provider_router.mark_failure("tavily")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            reason = f"HTTP {status}" if status else "connection error"
+            event_log.log_event("workers", f"{meta['name']}: Tavily test failed", reason)
+            return {"ok": False, "message": f"Tavily test failed ({reason})."}
+
+    if provider_id == "ddg":
+        return {"ok": True, "message": "DuckDuckGo needs no key and is always available."}
+
+    if provider_id == "local":
+        up = await loop.run_in_executor(None, model_manager.is_ollama_running)
+        return {"ok": up, "message": "Ollama is reachable." if up else "Ollama is not reachable — is it running?"}
+
+    return {"ok": False, "message": "No connection test available for this provider."}
 
 
 # ── Plugins (SageTech MarketPlace) ───────────────────────────────────────────

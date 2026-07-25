@@ -1,555 +1,570 @@
 /**
- * AgentsPage.jsx — The Forge › Agents
+ * AgentsPage.jsx — Agents (AI workforce control center)
  *
- * A living space for NYX's AI agents. Each agent is a stylized character
- * (Path A: CSS/SVG, no external art) living in its own cozy room, cycling
- * through idle behaviors and showing real-time status. As you deploy more
- * agents, rooms tile out and the camera zooms to fit the whole facility.
+ * Shows Nyx's real specialized workers — Momus, Hemera, Analyst, OpenClaw —
+ * as nodes connected to a central Nyx core, each showing real status,
+ * real active provider, and a configuration panel for real provider/API-key
+ * management with health/fallback info. Every value here comes from
+ * /api/workers (core/agent_registry.py) — nothing is fabricated. If real
+ * data isn't available, the UI says so rather than inventing a number.
  *
- * V1 ships one REAL agent — OpenClaw. Click it, Assign Task, and it runs
- * for real through NYX's OpenClaw pipeline; its status/room reflect what
- * it's genuinely doing (Idle vs. Working) and its activity is live.
+ * Replaces the previous room/character rendering (FacilityView.jsx, and the
+ * abandoned PixiRoom.jsx/ThreeRoom.jsx prototypes) with a node/core layout —
+ * those files are left in place but unused, not deleted, since agents_store.py
+ * and the room renderers are a separate, older system this page no longer
+ * calls into.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { API_URL } from '../utils/constants.js'
-import FacilityView from './FacilityView.jsx'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { useTheme } from '../utils/themeContext.jsx'
+import {
+  getWorkers, getWorker, setWorkerProviderKey, removeWorkerProviderKey,
+  setWorkerPriority, testWorkerProvider,
+} from '../services/api.js'
 
-const MONO = { fontFamily: 'Share Tech Mono, monospace' }
 const RAJ  = { fontFamily: 'Rajdhani, sans-serif' }
+const MONO = { fontFamily: 'Share Tech Mono, monospace' }
+const POLL_MS = 5000
 
-// Idle behaviors — each moves the character to a spot with an activity line.
-const BEHAVIORS = [
-  { id: 'pace',    label: 'Pacing around',            pos: 'center'  },
-  { id: 'beanbag', label: 'Relaxing on the bean bag', pos: 'beanbag' },
-  { id: 'nap',     label: 'Sleeping',                 pos: 'bed', sleep: true },
-  { id: 'window',  label: 'Watching the rain',        pos: 'window'  },
-  { id: 'shelf',   label: 'Browsing the shelf',       pos: 'shelf'   },
-  { id: 'stretch', label: 'Stretching',               pos: 'center'  },
-  { id: 'read',    label: 'Reading a book',           pos: 'beanbag' },
-  { id: 'coffee',  label: 'Drinking coffee',          pos: 'rug'     },
-  { id: 'plant',   label: 'Watering the plant',       pos: 'plant'   },
-  { id: 'tinker',  label: 'Tinkering at the desk',    pos: 'deskSit' },
-]
-
-// Character floor position per spot (% of the room box). y is the FEET line.
-const SPOTS = {
-  center:  { x: 50, y: 82 },
-  bed:     { x: 20, y: 74, sit: true },
-  beanbag: { x: 37, y: 90, sit: true },
-  window:  { x: 50, y: 66 },
-  shelf:   { x: 84, y: 74 },
-  deskSit: { x: 72, y: 70, sit: true },
-  rug:     { x: 52, y: 88 },
-  plant:   { x: 12, y: 82 },
+const STATUS_META = {
+  active:                 { label: 'Active',              color: '#22c55e' },
+  processing:             { label: 'Processing',          color: '#38bdf8' },
+  unavailable:            { label: 'Unavailable',         color: '#f87171' },
+  missing_configuration:  { label: 'Missing Configuration', color: '#facc15' },
 }
 
-// ── The character: a stylized hooded figure with glowing eyes ──────────
-function Character({ accent, pose, working, waving }) {
-  const sleeping = pose?.sleep
-  const sit = pose?.sit && !sleeping
+// Per-agent identity color (badge) — distinct from status color (border/bar
+// below), matching the reference's varied blue/gold/purple palette per card.
+const AGENT_GLYPH = { momus: '⚖', hemera: '☀', analyst: '✦', openclaw: '⚙' }
+const AGENT_COLOR = { momus: '#eab308', hemera: '#f97316', analyst: '#3b82f6', openclaw: '#a855f7' }
+
+function statusMeta(status) {
+  return STATUS_META[status] || { label: status || 'Unknown', color: 'var(--color-text-disabled)' }
+}
+
+function providerLabel(worker) {
+  const p = worker.providers?.find(p => p.id === worker.active_provider)
+  return p?.label || worker.active_provider || 'Unknown'
+}
+
+// ── Top stat box — matches the reference's boxed stat readouts. Every
+// value passed in is real (agent count, live status counts), never invented.
+function StatBox({ label, value, color, dot }) {
   return (
-    <div style={{ position: 'relative', width: 44, height: sit ? 40 : 52 }}>
-      {/* soft floor shadow */}
-      <div style={{ position: 'absolute', bottom: -3, left: '50%', transform: 'translateX(-50%)',
-        width: 34, height: 8, borderRadius: '50%', background: 'rgba(0,0,0,0.5)', filter: 'blur(3px)' }} />
-      {/* body / hoodie */}
-      <div style={{
-        position: 'absolute', bottom: 2, left: '50%', transform: 'translateX(-50%)',
-        width: 34, height: sit ? 30 : 40, borderRadius: '18px 18px 12px 12px',
-        background: `linear-gradient(160deg, #241a38, #0c0a16)`,
-        border: `1px solid ${accent}66`,
-        boxShadow: `0 0 16px ${accent}33, inset 0 2px 6px rgba(255,255,255,0.04)`,
-        animation: sleeping ? 'none' : 'nyxAgentBob 3.4s ease-in-out infinite',
-      }}>
-        {/* hood opening + glowing eyes */}
-        <div style={{ position: 'absolute', top: 7, left: '50%', transform: 'translateX(-50%)',
-          width: 23, height: 17, borderRadius: '12px 12px 10px 10px', background: '#040308' }}>
-          {sleeping ? (
-            <div style={{ position: 'absolute', top: 8, left: 5, right: 5, height: 2, borderRadius: 2,
-              background: accent, opacity: 0.55, boxShadow: `0 0 6px ${accent}` }} />
-          ) : (
-            <>
-              <span style={{ position: 'absolute', top: 6, left: 5, width: 4, height: 5, borderRadius: '50%',
-                background: accent, boxShadow: `0 0 7px ${accent}, 0 0 12px ${accent}` }} />
-              <span style={{ position: 'absolute', top: 6, right: 5, width: 4, height: 5, borderRadius: '50%',
-                background: accent, boxShadow: `0 0 7px ${accent}, 0 0 12px ${accent}` }} />
-            </>
-          )}
-        </div>
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+      background: 'rgba(4,5,18,0.7)', border: '1px solid rgba(var(--color-primary-rgb), 0.18)',
+      borderRadius: 10,
+    }}>
+      <div>
+        <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.14em' }}>{label}</div>
+        <div style={{ ...RAJ, fontSize: 16, fontWeight: 700, color: color || 'var(--color-text)' }}>{value}</div>
       </div>
-      {waving && (
-        <div style={{ position: 'absolute', top: -2, right: -8, fontSize: 13,
-          animation: 'nyxAgentBob 0.5s ease-in-out infinite' }}>👋</div>
-      )}
-      {sleeping && (
-        <div style={{ position: 'absolute', top: -10, right: -4, ...MONO, fontSize: 11, color: accent,
-          opacity: 0.8, animation: 'nyxAgentZzz 2.4s ease-in-out infinite' }}>z</div>
-      )}
+      {dot && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}` }} />}
     </div>
   )
 }
 
-// ── A single cozy room (2.5D diorama) ──────────────────────────────────
-function Room({ agent, selected, onSelect, big }) {
-  const [behavior, setBehavior] = useState(BEHAVIORS[0])
-  const [objMsg, setObjMsg] = useState(null)   // transient label from clicking an object
-  const [waving, setWaving] = useState(false)
-  const working = agent.status === 'Working'
-  const accent = agent.accent || '#7B4DFF'
-  const W = big ? 620 : 300, H = big ? 420 : 200
+// Dot positions computed directly in JS (px offsets from center) rather
+// than CSS transform chains — easier to verify correct, no risk of a
+// transform-order bug silently making dots invisible/misplaced.
+function ringDots(size, count, colorful) {
+  const r = size / 2
+  return Array.from({ length: count }).map((_, i) => {
+    const angle = (2 * Math.PI * i) / count
+    const big = i % 3 === 0
+    return {
+      key: i,
+      left: r * Math.cos(angle),
+      top: r * Math.sin(angle),
+      size: big && colorful ? 5 : 3,
+      accent: big && colorful,
+    }
+  })
+}
 
-  useEffect(() => {
-    if (working) return
-    const tick = () => setBehavior(BEHAVIORS[Math.floor(Math.random() * BEHAVIORS.length)])
-    const id = setInterval(tick, 6500 + Math.random() * 4500)
-    return () => clearInterval(id)
-  }, [working])
+// ── Central Nyx core — ambient glow wash + layered rings scattered with
+// small nodes + a faceted gem, matching the reference image's core ──
+function CoreNode({ particlesEnabled, glowEnabled }) {
+  const RINGS = [
+    { size: 240, dots: 12 },
+    { size: 192, dots: 9 },
+    { size: 146, dots: 7 },
+    { size: 100, dots: 0 },
+  ]
+  return (
+    <div style={{ position: 'absolute', left: '50%', top: '50%', width: 0, height: 0 }}>
+      {/* ambient radial wash behind the whole core, like the reference's glow */}
+      {glowEnabled && (
+        <div style={{
+          position: 'absolute', width: 480, height: 480, marginLeft: -240, marginTop: -240,
+          background: 'radial-gradient(circle, rgba(var(--color-primary-rgb),0.16), rgba(var(--color-primary-rgb),0) 68%)',
+          pointerEvents: 'none',
+        }} />
+      )}
 
-  const pose = working ? { id: 'work', label: agent.current_task || 'Working…', pos: 'deskSit', sit: true } : behavior
-  const spot = SPOTS[pose.pos] || SPOTS.center
-  const activity = objMsg || pose.label
+      {RINGS.map(({ size, dots }, i) => (
+        <motion.div
+          key={size}
+          animate={particlesEnabled ? { rotate: i % 2 === 0 ? 360 : -360 } : {}}
+          transition={particlesEnabled ? { duration: 26 + i * 12, repeat: Infinity, ease: 'linear' } : {}}
+          style={{
+            position: 'absolute', width: size, height: size,
+            marginLeft: -size / 2, marginTop: -size / 2, borderRadius: '50%',
+            border: `1px solid rgba(var(--color-primary-rgb), ${0.5 - i * 0.07})`,
+          }}
+        >
+          {ringDots(size, dots, true).map(d => (
+            <div key={d.key} style={{
+              position: 'absolute', width: d.size, height: d.size, marginLeft: -d.size / 2, marginTop: -d.size / 2,
+              borderRadius: '50%',
+              background: d.accent ? 'var(--color-accent)' : 'rgba(255,255,255,0.85)',
+              boxShadow: glowEnabled ? (d.accent ? '0 0 8px var(--color-accent)' : '0 0 4px rgba(255,255,255,0.6)') : 'none',
+              left: size / 2 + d.left, top: size / 2 + d.top,
+            }} />
+          ))}
+        </motion.div>
+      ))}
 
-  const flash = (msg, e) => {
-    if (e) e.stopPropagation()
-    setObjMsg(msg); setTimeout(() => setObjMsg(null), 2200)
-  }
-  const wave = (e) => {
-    e.stopPropagation(); onSelect(agent.id)
-    setWaving(true); setTimeout(() => setWaving(false), 1600)
-  }
+      {/* faceted gem — layered rotated squares forming a crystal look */}
+      <motion.div
+        animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
+        transition={particlesEnabled ? { duration: 3.2, repeat: Infinity, ease: 'easeInOut' } : {}}
+      >
+        <div style={{
+          position: 'absolute', width: 58, height: 58, marginLeft: -29, marginTop: -29,
+          transform: 'rotate(45deg)',
+          background: 'linear-gradient(135deg, var(--color-accent), var(--color-primary))',
+          boxShadow: glowEnabled
+            ? '0 0 40px rgba(var(--color-primary-rgb), 0.85), 0 0 90px rgba(var(--color-primary-rgb), 0.35)'
+            : 'none',
+          borderRadius: 8, opacity: 0.9,
+        }} />
+        <div style={{
+          position: 'absolute', width: 58, height: 58, marginLeft: -29, marginTop: -29,
+          transform: 'rotate(20deg)',
+          background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+          borderRadius: 8, opacity: 0.4,
+        }} />
+        <div style={{
+          position: 'absolute', width: 30, height: 30, marginLeft: -15, marginTop: -15,
+          transform: 'rotate(45deg)', background: 'rgba(255,255,255,0.92)', borderRadius: 5,
+          boxShadow: glowEnabled ? '0 0 24px rgba(255,255,255,0.95)' : 'none',
+        }} />
+      </motion.div>
+    </div>
+  )
+}
 
-  const px = (v, dim) => (v / 100) * dim
-  const S = big ? 1 : 0.62   // scale furniture for the small facility tiles
-
+// ── One worker node/card — circular per-agent-colored badge + status
+// bar (bar fill reflects real state; the number was deliberately dropped
+// per your call — no invented precision score) ──
+function WorkerNode({ worker, x, y, onOpen, glowEnabled }) {
+  const meta = statusMeta(worker.status)
+  const badgeColor = AGENT_COLOR[worker.id] || 'var(--color-primary)'
+  const barFill = worker.status === 'active' ? 100 : worker.status === 'processing' ? 55 : 8
   return (
     <div
-      onClick={() => onSelect(agent.id)}
+      onClick={() => onOpen(worker.id)}
       style={{
-        width: W, height: H, position: 'relative', flexShrink: 0, cursor: 'pointer',
-        borderRadius: 20, overflow: 'hidden',
-        border: `1px solid ${selected ? accent + 'aa' : 'rgba(150,110,255,0.28)'}`,
-        boxShadow: selected ? `0 0 44px ${accent}44` : '0 10px 40px rgba(0,0,0,0.45)',
-        transition: 'border-color 0.3s, box-shadow 0.3s',
-        background: '#0a0816',
+        position: 'absolute', left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)',
+        width: 196, cursor: 'pointer',
+        background: 'rgba(6,7,20,0.9)', border: `1px solid ${badgeColor}55`,
+        borderRadius: 14, padding: '13px 15px 12px',
+        boxShadow: glowEnabled ? `0 0 20px ${badgeColor}1c, inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
+        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
+        transition: 'transform 0.15s, border-color 0.15s',
       }}
+      onMouseEnter={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1.035)'}
+      onMouseLeave={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1)'}
     >
-      {/* ── Back wall ── */}
-      <div style={{ position: 'absolute', inset: 0,
-        background: `linear-gradient(180deg, #171029 0%, #120d22 55%), radial-gradient(90% 70% at 78% 30%, ${accent}22, transparent 60%)` }} />
-
-      {/* ── Window with rain + moon + weather ── */}
-      <div style={{ position: 'absolute', left: '46%', top: '10%', width: px(26, W), height: px(30, H),
-        borderRadius: 8, overflow: 'hidden', border: '2px solid rgba(120,110,180,0.35)',
-        background: 'linear-gradient(180deg, #1b2350 0%, #0e1330 100%)',
-        boxShadow: 'inset 0 0 24px rgba(80,110,220,0.25)' }}
-        onClick={e => flash('Weather · Rainy', e)} title="Weather">
-        {/* moon */}
-        <div style={{ position: 'absolute', top: '18%', right: '18%', width: 14, height: 14, borderRadius: '50%',
-          background: 'radial-gradient(circle at 35% 35%, #eae6ff, #b9a6ff)', boxShadow: '0 0 14px rgba(200,190,255,0.7)' }} />
-        {/* rain */}
-        <div style={{ position: 'absolute', inset: 0, opacity: 0.5,
-          background: 'repeating-linear-gradient(102deg, transparent 0 5px, rgba(180,200,255,0.28) 5px 6px)',
-          animation: 'nyxRain 0.5s linear infinite' }} />
-        {/* sill light */}
-        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 4, background: 'rgba(140,160,255,0.3)' }} />
-      </div>
-
-      {/* ── Wall decor (fills the back wall so it feels lived-in) ── */}
-      {/* framed poster (left of window) */}
-      <div style={{ position: 'absolute', left: px(20, W), top: px(14, H), width: 34 * S, height: 46 * S,
-        borderRadius: 4, background: `linear-gradient(160deg, ${accent}55, #1a1230)`,
-        border: '2px solid rgba(150,120,200,0.3)', boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }}>
-        <div style={{ position: 'absolute', inset: '30% 20% 45% 20%', borderRadius: 2, background: `${accent}88` }} />
-      </div>
-      {/* small round wall clock (right of window) */}
-      <div style={{ position: 'absolute', right: px(22, W), top: px(16, H), width: 26 * S, height: 26 * S,
-        borderRadius: '50%', background: 'radial-gradient(circle at 40% 35%, #2a2142, #14102a)',
-        border: '2px solid rgba(150,120,200,0.3)' }}>
-        <div style={{ position: 'absolute', top: '50%', left: '50%', width: 1.5, height: 8 * S, background: accent,
-          transformOrigin: 'top', transform: 'translate(-50%,0) rotate(40deg)' }} />
-        <div style={{ position: 'absolute', top: '50%', left: '50%', width: 1.5, height: 6 * S, background: '#B9A6FF',
-          transformOrigin: 'top', transform: 'translate(-50%,0) rotate(-90deg)' }} />
-      </div>
-      {/* string lights along the top */}
-      <div style={{ position: 'absolute', top: 4, left: '8%', right: '8%', height: 10, display: 'flex',
-        justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        {[...Array(big ? 12 : 7)].map((_, i) => (
-          <div key={i} style={{ width: 3, height: 3, borderRadius: '50%', marginTop: (i % 2) * 4,
-            background: i % 3 === 0 ? accent : '#c9a8ff', opacity: 0.75,
-            boxShadow: `0 0 6px ${i % 3 === 0 ? accent : '#c9a8ff'}`,
-            animation: `nyxBreathe ${3 + (i % 3)}s ease-in-out ${i * 0.2}s infinite` }} />
-        ))}
-      </div>
-
-      {/* ── Floor (subtle perspective band) ── */}
-      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '38%',
-        background: 'linear-gradient(to bottom, #241a3a, #0d0a1a)',
-        borderTop: '1px solid rgba(150,110,255,0.16)',
-        boxShadow: 'inset 0 8px 20px rgba(0,0,0,0.4)' }} />
-      {/* rug */}
-      <div onClick={e => flash('Relaxing', e)} style={{ position: 'absolute', left: '50%', bottom: px(6, H),
-        transform: 'translateX(-50%)', width: px(46, W) * S + 40, height: px(12, H),
-        borderRadius: '50%', background: `radial-gradient(circle, ${accent}33, transparent 70%)`,
-        border: `1px solid ${accent}22` }} />
-
-      {/* ── Furniture (CSS art) ── */}
-      {/* Bed */}
-      <div onClick={e => flash('Sleeping', e)} title="Bed"
-        style={{ position: 'absolute', left: px(6, W), bottom: px(20, H), width: 96 * S, height: 40 * S }}>
-        <div style={{ position: 'absolute', inset: 0, borderRadius: 8, background: 'linear-gradient(160deg, #2a2142, #191228)',
-          border: '1px solid rgba(140,100,255,0.2)' }} />
-        <div style={{ position: 'absolute', left: 4, top: 4, width: 22 * S, height: 14 * S, borderRadius: 4,
-          background: `${accent}66` }} />{/* pillow */}
-        <div style={{ position: 'absolute', right: 3, top: 8, left: 28 * S, bottom: 3, borderRadius: 5,
-          background: 'linear-gradient(160deg, #3a2c5e, #241a3c)' }} />{/* blanket */}
-      </div>
-
-      {/* Desk + monitor + chair */}
-      <div title="Computer" onClick={e => flash(working ? (agent.current_task || 'Working…') : 'Idle', e)}
-        style={{ position: 'absolute', right: px(6, W), bottom: px(20, H), width: 92 * S, height: 50 * S }}>
-        {/* monitor */}
-        <div style={{ position: 'absolute', left: 14 * S, top: 0, width: 56 * S, height: 30 * S, borderRadius: 4,
-          background: '#0a0812', border: `1px solid ${accent}55` }}>
-          <div style={{ position: 'absolute', inset: 3, borderRadius: 2, background: `${accent}55`,
-            animation: working ? 'nyxScreen 1.4s ease-in-out infinite' : 'none', opacity: working ? 1 : 0.5,
-            boxShadow: working ? `0 0 18px ${accent}` : 'none' }} />
-        </div>
-        {/* desk surface */}
-        <div style={{ position: 'absolute', bottom: 4, left: 0, right: 0, height: 8 * S, borderRadius: 3,
-          background: 'linear-gradient(#3a2c5e, #241a3c)' }} />
-        <div style={{ position: 'absolute', bottom: -6, left: 6, width: 5, height: 12 * S, background: '#1c1530' }} />
-        <div style={{ position: 'absolute', bottom: -6, right: 6, width: 5, height: 12 * S, background: '#1c1530' }} />
-      </div>
-
-      {/* Bean bag */}
-      <div onClick={e => flash('Relaxing', e)} title="Bean bag"
-        style={{ position: 'absolute', left: px(28, W), bottom: px(10, H), width: 42 * S, height: 30 * S,
-          borderRadius: '50% 50% 46% 46%', background: 'radial-gradient(circle at 40% 30%, #4a3570, #241a3c)',
-          border: '1px solid rgba(140,100,255,0.2)' }} />
-
-      {/* Shelf with books */}
-      <div onClick={e => flash('Knowledge', e)} title="Bookshelf"
-        style={{ position: 'absolute', right: px(3, W), bottom: px(22, H), width: 26 * S, height: 66 * S,
-          background: 'linear-gradient(#241a3c, #17102a)', borderRadius: 4, border: '1px solid rgba(140,100,255,0.18)',
-          display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly', padding: 3 }}>
-        {[['#B96CFF', 8], ['#7AA7FF', 5], ['#8F5CFF', 9], ['#FF7742', 6]].map(([c, h], i) => (
-          <div key={i} style={{ display: 'flex', gap: 2 }}>
-            {[0,1,2].map(j => <div key={j} style={{ flex: 1, height: 5 + (j % 2) * 2, background: c, opacity: 0.7, borderRadius: 1 }} />)}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 9 }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: '50%', flexShrink: 0,
+          background: `radial-gradient(circle at 35% 30%, ${badgeColor}, ${badgeColor}66 70%)`,
+          boxShadow: glowEnabled ? `0 0 16px ${badgeColor}77` : 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 19, color: '#fff',
+        }}>{AGENT_GLYPH[worker.id] || '○'}</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ ...RAJ, fontSize: 14.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--color-text)' }}>
+            {worker.name}
           </div>
-        ))}
+          <div style={{ ...MONO, fontSize: 8.5, color: badgeColor, letterSpacing: '0.05em', marginTop: 1 }}>{worker.engine_kind}</div>
+        </div>
       </div>
 
-      {/* Plant */}
-      <div onClick={e => flash('Watering the plant', e)} title="Plant"
-        style={{ position: 'absolute', left: px(2, W), bottom: px(14, H), width: 22 * S, height: 30 * S }}>
-        <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 14 * S, height: 12 * S,
-          background: '#3a2c5e', borderRadius: '3px 3px 6px 6px' }} />
-        <div style={{ position: 'absolute', bottom: 8 * S, left: '50%', transform: 'translateX(-50%)', width: 20 * S, height: 20 * S,
-          borderRadius: '60% 40% 55% 45%', background: 'radial-gradient(circle at 40% 30%, #4caf7a, #1f5e3f)' }} />
+      <div style={{
+        ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', lineHeight: 1.5,
+        marginBottom: 10, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+      }}>
+        {worker.purpose}
       </div>
 
-      {/* Lamp with warm glow */}
-      <div title="Lamp" style={{ position: 'absolute', left: px(44, W), bottom: px(20, H), width: 18 * S, height: 40 * S }}>
-        <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 16 * S, height: 12 * S,
-          borderRadius: '8px 8px 3px 3px', background: 'linear-gradient(#c9a8ff, #7b4dff)',
-          boxShadow: `0 0 26px ${accent}aa`, animation: 'nyxLampFlicker 5s ease-in-out infinite' }} />
-        <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 3, height: 26 * S, background: '#2a2142' }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 7 }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color, boxShadow: glowEnabled ? `0 0 6px ${meta.color}` : 'none' }} />
+        <span style={{ ...MONO, fontSize: 8.5, color: meta.color, letterSpacing: '0.06em' }}>{meta.label.toUpperCase()}</span>
       </div>
 
-      {/* ── The agent character ── */}
-      <div onClick={wave}
-        style={{ position: 'absolute', left: `${spot.x}%`, top: `${spot.y}%`,
-          transform: 'translate(-50%,-100%)', transition: 'left 2s ease, top 2s ease', zIndex: 6 }}>
-        <Character accent={accent} pose={pose} working={working} waving={waving} />
+      {/* Status bar — fill reflects real live state, no invented number */}
+      <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', marginBottom: 8 }}>
+        <motion.div
+          animate={{ width: `${barFill}%` }}
+          transition={{ duration: 0.6 }}
+          style={{ height: '100%', background: badgeColor, boxShadow: glowEnabled ? `0 0 6px ${badgeColor}` : 'none' }}
+        />
       </div>
 
-      {/* ── Ambient particles ── */}
-      {[...Array(big ? 10 : 4)].map((_, i) => (
-        <div key={i} style={{ position: 'absolute', left: `${(i * 37 + 12) % 92}%`, bottom: `${(i * 23) % 40 + 6}%`,
-          width: 3, height: 3, borderRadius: '50%', background: accent, opacity: 0.5,
-          animation: `nyxParticle ${4 + (i % 4)}s ease-in-out ${i * 0.6}s infinite` }} />
-      ))}
-      {/* breathing glow */}
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none',
-        background: `radial-gradient(60% 50% at 50% 90%, ${accent}18, transparent 70%)`,
-        animation: 'nyxBreathe 6s ease-in-out infinite' }} />
-
-      {/* ── Minimal UI overlay ── */}
-      <div style={{ position: 'absolute', top: 12, left: 14, ...MONO, fontSize: big ? 10 : 8, letterSpacing: '0.22em',
-        color: '#B9A6FF', textShadow: '0 1px 6px #000' }}>ROOM — {agent.name.toUpperCase()}</div>
-      <div style={{ position: 'absolute', top: 12, left: 0, right: 0, textAlign: 'center',
-        ...RAJ, fontSize: big ? 15 : 11, fontWeight: 600, letterSpacing: '0.04em',
-        color: working ? accent : '#EDE8FF', textShadow: '0 1px 8px #000', pointerEvents: 'none' }}>
-        {activity}{working ? '' : '…'}
-      </div>
+      <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)' }}>via {providerLabel(worker)}</div>
     </div>
   )
 }
 
-// ── Side panel ─────────────────────────────────────────────────────────
-function AgentPanel({ agentId, onClose, onChanged }) {
-  const [agent, setAgent] = useState(null)
+// ── SVG connectors — solid glowing bent path (core -> elbow -> card) per
+// agent's own identity color, with a traveling pulse when animations are
+// on, matching the reference's brighter, richer-colored links ──
+function Connectors({ positions, glowEnabled, particlesEnabled }) {
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+      <defs>
+        <filter id="connectorGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="0.6" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      {positions.map(({ id, x, y, color }) => {
+        const elbowX = 50 + (x - 50) * 0.5
+        const elbowY = 50 + (y - 50) * 0.62
+        const path = `M 50 50 L ${elbowX} ${elbowY} L ${x} ${y}`
+        return (
+          <g key={id} filter={glowEnabled ? 'url(#connectorGlow)' : undefined}>
+            <path d={path} fill="none" stroke={color} strokeWidth="0.45" strokeOpacity={glowEnabled ? 0.75 : 0.4} strokeLinecap="round" />
+            {particlesEnabled && (
+              <circle r="0.7" fill="#fff" opacity={0.9}>
+                <animateMotion dur="2.2s" repeatCount="indefinite" path={path} />
+              </circle>
+            )}
+            <circle cx={elbowX} cy={elbowY} r="0.6" fill="#fff" opacity={glowEnabled ? 0.9 : 0.55} />
+            <circle cx={x} cy={y} r="0.55" fill={color} opacity={glowEnabled ? 0.95 : 0.6} />
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+// ═══════════════════════════════════════════════════════
+// Detail modal — provider config, key management, fallback order
+// ═══════════════════════════════════════════════════════
+function ProviderCard({ worker, provider, onChanged }) {
+  const [keyInput, setKeyInput] = useState('')
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState(null)
+  const [testResult, setTestResult] = useState(null)
+  const isPrimary = worker.provider_order[0] === provider.id
 
-  const load = useCallback(() => {
-    fetch(`${API_URL}/api/agents/${agentId}`).then(r => r.json()).then(setAgent).catch(() => {})
-  }, [agentId])
-
-  useEffect(() => {
-    load()
-    const id = setInterval(load, 3000)
-    return () => clearInterval(id)
-  }, [load])
-
-  const assign = async () => {
-    const task = prompt(`Assign a task to ${agent.name} — it runs for real via OpenClaw.\nTry: "take a screenshot", "what's using my cpu", "open notepad"`)
-    if (!task || !task.trim()) return
-    setBusy(true); setResult(null)
+  const handleSave = async () => {
+    if (!keyInput.trim()) return
+    setBusy(true)
     try {
-      const res = await fetch(`${API_URL}/api/agents/${agentId}/task`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: task.trim() }),
-      })
-      const data = await res.json()
-      setResult(res.ok ? data.result : (data.detail || 'Task failed'))
+      await setWorkerProviderKey(worker.id, provider.id, keyInput.trim())
+      setKeyInput('')
+      setTestResult(null)
+      await onChanged()
     } catch (e) {
-      setResult(String(e.message || e))
+      setTestResult({ ok: false, message: e.message })
     } finally {
-      setBusy(false); load(); onChanged?.()
+      setBusy(false)
     }
   }
 
-  const rename = async () => {
-    const name = prompt('Rename agent:', agent.name)
-    if (name && name.trim()) {
-      await fetch(`${API_URL}/api/agents/${agentId}`, { method: 'PUT',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) })
-      load(); onChanged?.()
-    }
-  }
-
-  const remove = async () => {
-    if (!confirm(`Remove ${agent.name}?`)) return
-    const r = await fetch(`${API_URL}/api/agents/${agentId}`, { method: 'DELETE' })
-    if (r.ok) { onChanged?.(); onClose() } else alert("This agent can't be removed.")
-  }
-
-  if (!agent) return null
-  const accent = agent.accent || '#7B4DFF'
-  const row = (k, v) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0',
-      borderBottom: '1px solid rgba(140,100,255,0.1)' }}>
-      <span style={{ ...MONO, fontSize: 10, color: '#8E86B8' }}>{k}</span>
-      <span style={{ ...MONO, fontSize: 10, color: '#EDE8FF', maxWidth: 170, textAlign: 'right',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
-    </div>
-  )
-
-  return (
-    <div style={{ width: 300, flexShrink: 0, borderLeft: '1px solid rgba(140,100,255,0.18)',
-      padding: '20px 18px', overflowY: 'auto', height: '100%', background: 'rgba(8,6,20,0.4)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <div style={{ width: 34, height: 34, borderRadius: 9, background: `${accent}33`,
-          border: `1px solid ${accent}88`, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: accent }}>◎</div>
-        <div style={{ flex: 1 }}>
-          <div style={{ ...RAJ, fontSize: 18, fontWeight: 700, color: '#F3EDFF' }}>{agent.name}</div>
-          <div style={{ ...MONO, fontSize: 9, color: '#8E86B8' }}>{agent.personality}</div>
-        </div>
-        <div onClick={onClose} style={{ ...MONO, color: '#8E86B8', cursor: 'pointer', fontSize: 14 }}>✕</div>
-      </div>
-
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 12,
-        padding: '4px 10px', borderRadius: 20, background: agent.status === 'Working' ? `${accent}22` : 'rgba(20,14,40,0.6)',
-        border: `1px solid ${agent.status === 'Working' ? accent + '77' : 'rgba(140,100,255,0.2)'}` }}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: agent.status === 'Working' ? accent : '#22c55e',
-          boxShadow: `0 0 8px ${agent.status === 'Working' ? accent : '#22c55e'}` }} />
-        <span style={{ ...MONO, fontSize: 10, color: '#E9D8FF' }}>{agent.status}</span>
-      </div>
-
-      {row('Model', agent.model)}
-      {row('Current task', agent.current_task || '—')}
-      {row('Tools', (agent.tools || []).join(', '))}
-      {row('OpenClaw', agent.engine === 'openclaw' ? 'built-in tool' : '—')}
-
-      <div style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
-        <div onClick={busy ? undefined : assign} style={{
-          ...MONO, flex: 1, textAlign: 'center', fontSize: 10, letterSpacing: '0.12em', color: '#E9D8FF',
-          padding: '10px 0', borderRadius: 10, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1,
-          background: `linear-gradient(90deg, ${accent}aa, ${accent}66)`, border: `1px solid ${accent}88` }}>
-          {busy ? 'WORKING…' : '⌘ ASSIGN TASK'}
-        </div>
-        <div onClick={rename} title="Rename" style={{ ...MONO, fontSize: 11, color: '#C7A6FF', cursor: 'pointer',
-          padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(140,100,255,0.25)' }}>✎</div>
-        {!agent.builtin && (
-          <div onClick={remove} title="Remove" style={{ ...MONO, fontSize: 11, color: '#8E86B8', cursor: 'pointer',
-            padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(140,100,255,0.25)' }}>✕</div>
-        )}
-      </div>
-
-      {result && (
-        <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(16,12,38,0.7)',
-          border: '1px solid rgba(140,100,255,0.2)', fontSize: 11.5, color: '#D8C9FF', lineHeight: 1.5,
-          maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{result}</div>
-      )}
-
-      <div style={{ ...MONO, fontSize: 9, letterSpacing: '0.25em', color: '#8E86B8', margin: '6px 0 8px' }}>ACTIVITY</div>
-      {(agent.activity || []).length === 0 && (
-        <div style={{ ...MONO, fontSize: 10, color: '#5E587A' }}>No activity yet.</div>
-      )}
-      {(agent.activity || []).map((a, i) => (
-        <div key={i} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid rgba(140,100,255,0.07)' }}>
-          <span style={{ ...MONO, fontSize: 12, color: a.kind === 'error' ? '#FF7AA2' : a.kind === 'result' ? '#22c55e' : accent }}>
-            {a.kind === 'task' ? '▸' : a.kind === 'result' ? '✓' : a.kind === 'error' ? '!' : '·'}
-          </span>
-          <div style={{ flex: 1, fontSize: 11, color: '#B9A6FF', overflow: 'hidden' }}>
-            <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.text}</div>
-            <div style={{ ...MONO, fontSize: 8, color: '#5E587A' }}>
-              {new Date(a.time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── Page ───────────────────────────────────────────────────────────────
-export default function AgentsPage() {
-  const [agents, setAgents]   = useState([])
-  const [online, setOnline]   = useState(false)
-  const [selected, setSelected] = useState(null)
-  const [panelOpen, setPanelOpen] = useState(false)
-  const [busy, setBusy]       = useState(false)
-  const [toast, setToast]     = useState(null)
-  const [dims, setDims]       = useState({ w: 0, h: 0 })
-  const facilityRef           = useRef(null)
-
-  // Measure the facility area so the PixiJS canvas fills it and stays crisp
-  useEffect(() => {
-    const el = facilityRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      const r = el.getBoundingClientRect()
-      setDims({ w: Math.max(320, Math.round(r.width)), h: Math.max(240, Math.round(r.height)) })
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  const load = useCallback(() => {
-    fetch(`${API_URL}/api/agents`).then(r => r.json()).then(d => {
-      setAgents(d.agents || [])
-      setOnline(d.openclaw_online)
-      setSelected(s => s || (d.agents?.[0]?.id ?? null))
-    }).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    load()
-    const id = setInterval(load, 3000)
-    return () => clearInterval(id)
-  }, [load])
-
-  const single = agents.length === 1
-  const focused = agents.find(a => a.id === selected)
-
-  const deploy = async () => {
-    const name = prompt('Deploy a new agent — name:')
-    if (!name || !name.trim()) return
-    const personality = prompt('Personality (e.g. Focused, Playful, Quiet):', 'Curious') || 'Curious'
-    const r = await fetch(`${API_URL}/api/agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name.trim(), personality }) })
-    const a = await r.json()
-    load(); setSelected(a.id)
-    setZoom(z => Math.max(0.55, z - 0.12))   // camera pulls back as the facility grows
-  }
-
-  const assignTask = async () => {
-    if (!focused) return
-    const task = prompt(`Assign a task to ${focused.name} — it runs for real via OpenClaw.\nTry: "take a screenshot", "what's using my cpu", "open notepad"`)
-    if (!task || !task.trim()) return
-    setBusy(true); setToast(`${focused.name} is working…`)
+  const handleRemove = async () => {
+    setBusy(true)
     try {
-      const res = await fetch(`${API_URL}/api/agents/${focused.id}/task`, { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: task.trim() }) })
-      const data = await res.json()
-      setToast(res.ok ? data.result : (data.detail || 'Task failed'))
-    } catch (e) { setToast(String(e.message || e)) }
-    finally { setBusy(false); load() }
-  }
-
-  const roomSettings = async () => {
-    if (!focused) return
-    const name = prompt('Room settings — rename this agent:', focused.name)
-    if (name && name.trim()) {
-      await fetch(`${API_URL}/api/agents/${focused.id}`, { method: 'PUT',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) })
-      load()
+      await removeWorkerProviderKey(worker.id, provider.id)
+      setTestResult(null)
+      await onChanged()
+    } finally {
+      setBusy(false)
     }
   }
 
-  const ctrl = (label, onClick, primary) => (
-    <div onClick={busy && primary ? undefined : onClick} style={{
-      ...MONO, fontSize: 10, letterSpacing: '0.14em', cursor: busy && primary ? 'default' : 'pointer',
-      padding: '9px 18px', borderRadius: 20, userSelect: 'none',
-      color: primary ? '#E9D8FF' : '#B9A6FF',
-      background: primary ? 'linear-gradient(90deg, rgba(123,77,255,0.55), rgba(185,108,255,0.4))' : 'rgba(14,10,30,0.7)',
-      border: `1px solid ${primary ? 'rgba(199,166,255,0.5)' : 'rgba(140,100,255,0.25)'}`,
-      opacity: busy && primary ? 0.6 : 1, backdropFilter: 'blur(8px)',
-    }}>{label}</div>
-  )
+  const handleTest = async () => {
+    setBusy(true)
+    setTestResult(null)
+    try {
+      const res = await testWorkerProvider(worker.id, provider.id)
+      setTestResult(res)
+    } catch (e) {
+      setTestResult({ ok: false, message: e.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleMakePrimary = async () => {
+    setBusy(true)
+    try {
+      const rest = worker.provider_order.filter(p => p !== provider.id)
+      await setWorkerPriority(worker.id, [provider.id, ...rest])
+      await onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <div style={{ flex: 1, display: 'flex', height: '100%', overflow: 'hidden' }}>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-        {/* Slim top bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 22px' }}>
-          <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, letterSpacing: '0.14em', color: '#F3EDFF',
-            textShadow: '0 0 22px rgba(199,166,255,0.35)' }}>AGENTS</div>
-          <div style={{ ...MONO, fontSize: 9, color: '#8E86B8' }}>
-            {agents.length} · OpenClaw {online ? 'online' : 'via Ollama'}
-          </div>
-          <div style={{ flex: 1 }} />
-          <div onClick={deploy} style={{ ...MONO, fontSize: 9, letterSpacing: '0.14em', color: '#E9D8FF', cursor: 'pointer',
-            padding: '8px 14px', borderRadius: 10, background: 'linear-gradient(90deg, rgba(123,77,255,0.5), rgba(185,108,255,0.38))',
-            border: '1px solid rgba(170,120,255,0.5)' }}>+ DEPLOY</div>
-        </div>
-
-        {/* Top-down neon facility — fills the area, pans/zooms itself */}
-        <div ref={facilityRef} style={{ flex: 1, overflow: 'hidden', padding: 14 }}>
-          {dims.w > 0 && agents.length > 0 && (
-            <FacilityView agents={agents} width={dims.w - 28} height={dims.h - 28}
-              selected={selected} onSelect={setSelected} />
+    <div style={{
+      border: `1px solid ${isPrimary ? 'rgba(var(--color-primary-rgb), 0.4)' : 'rgba(var(--color-primary-rgb), 0.14)'}`,
+      borderRadius: 12, padding: '13px 15px', marginBottom: 10,
+      background: isPrimary ? 'rgba(var(--color-primary-rgb), 0.07)' : 'rgba(8,10,26,0.5)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ ...RAJ, fontSize: 12.5, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--color-text)' }}>{provider.label}</span>
+          {isPrimary && (
+            <span style={{ ...MONO, fontSize: 7.5, color: 'var(--color-primary)', border: '1px solid rgba(var(--color-primary-rgb),0.4)', borderRadius: 4, padding: '1px 5px', letterSpacing: '0.08em' }}>PRIMARY</span>
           )}
         </div>
+        <span style={{ ...MONO, fontSize: 8.5, color: provider.configured ? '#22c55e' : 'var(--color-text-disabled)' }}>
+          {provider.configured ? 'CONNECTED' : provider.requires_key ? 'NOT CONNECTED' : 'BUILT-IN'}
+        </span>
+      </div>
 
-        {/* Minimal bottom controls — act on the focused agent */}
-        {focused && (
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, padding: '4px 0 20px' }}>
-            {ctrl('◉ Observe', () => setPanelOpen(true))}
-            {ctrl(busy ? 'Working…' : '⌘ Assign Task', assignTask, true)}
-            {ctrl('⚙ Room Settings', roomSettings)}
-          </div>
+      {provider.masked_key && (
+        <div style={{ ...MONO, fontSize: 9, color: 'var(--color-text-disabled)', marginBottom: 6 }}>Key: {provider.masked_key}</div>
+      )}
+
+      {provider.requires_key && !provider.healthy && (
+        <div style={{ ...MONO, fontSize: 8.5, color: '#facc15', marginBottom: 6 }}>
+          Unhealthy — {provider.consecutive_failures} recent failure(s), cooling down before retry
+        </div>
+      )}
+
+      {provider.requires_key && !provider.configured && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+          <input
+            type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)}
+            placeholder={`${provider.label} API key`}
+            style={{
+              flex: 1, background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(var(--color-primary-rgb),0.25)',
+              borderRadius: 6, padding: '6px 9px', color: 'var(--color-text)', fontSize: 11, ...MONO,
+            }}
+          />
+          <button onClick={handleSave} disabled={busy || !keyInput.trim()} style={btnStyle('primary')}>Save</button>
+        </div>
+      )}
+
+      {testResult && (
+        <div style={{ ...MONO, fontSize: 8.5, color: testResult.ok ? '#22c55e' : '#f87171', marginBottom: 6 }}>
+          {testResult.message}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button onClick={handleTest} disabled={busy} style={btnStyle('ghost')}>Test Connection</button>
+        {!isPrimary && (
+          <button onClick={handleMakePrimary} disabled={busy} style={btnStyle('ghost')}>Set as Primary</button>
         )}
+        {provider.requires_key && provider.configured && (
+          <button onClick={handleRemove} disabled={busy} style={btnStyle('danger')}>Disconnect</button>
+        )}
+      </div>
+    </div>
+  )
+}
 
-        {/* Task result toast */}
-        {toast && (
-          <div onClick={() => setToast(null)} style={{ position: 'absolute', left: '50%', bottom: 72,
-            transform: 'translateX(-50%)', maxWidth: 460, cursor: 'pointer',
-            background: 'rgba(12,10,30,0.96)', border: '1px solid rgba(150,110,255,0.3)', borderRadius: 12,
-            padding: '10px 16px', fontSize: 12, color: '#D8C9FF', lineHeight: 1.5, whiteSpace: 'pre-wrap',
-            maxHeight: 180, overflowY: 'auto', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', zIndex: 20 }}>
-            {toast}
+function btnStyle(kind) {
+  const base = {
+    ...RAJ, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase',
+    borderRadius: 6, padding: '6px 11px', cursor: 'pointer',
+  }
+  if (kind === 'primary') return { ...base, background: 'var(--color-primary)', border: 'none', color: '#fff' }
+  if (kind === 'danger')  return { ...base, background: 'none', border: '1px solid rgba(248,113,113,0.4)', color: '#f87171' }
+  return { ...base, background: 'none', border: '1px solid rgba(var(--color-primary-rgb),0.3)', color: 'var(--color-text-muted)' }
+}
+
+function WorkerDetailModal({ workerId, onClose }) {
+  const [worker, setWorker] = useState(null)
+  const [error, setError] = useState(null)
+
+  const reload = useCallback(async () => {
+    try {
+      const w = await getWorker(workerId)
+      setWorker(w)
+      setError(null)
+    } catch (e) {
+      setError(e.message)
+    }
+  }, [workerId])
+
+  useEffect(() => { reload() }, [reload])
+
+  const meta = worker ? statusMeta(worker.status) : null
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.82)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400, backdropFilter: 'blur(5px)' }}
+    >
+      <motion.div
+        initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'rgba(4,5,18,0.98)', border: '1px solid rgba(var(--color-primary-rgb), 0.3)',
+          borderRadius: 14, padding: 26, maxWidth: 520, width: '92%', maxHeight: '84vh', overflowY: 'auto',
+          boxShadow: '0 0 60px rgba(var(--color-primary-rgb), 0.15)',
+        }}
+      >
+        {error && <div style={{ ...MONO, fontSize: 11, color: '#f87171' }}>Could not load agent: {error}</div>}
+        {!worker && !error && <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>Loading...</div>}
+
+        {worker && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ ...RAJ, fontSize: 19, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--color-text)' }}>{worker.name}</div>
+              <button onClick={onClose} style={{ ...btnStyle('ghost'), padding: '4px 10px' }}>Close</button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color, boxShadow: `0 0 6px ${meta.color}` }} />
+              <span style={{ ...MONO, fontSize: 9, color: meta.color, letterSpacing: '0.08em' }}>{meta.label.toUpperCase()}</span>
+              <span style={{ ...MONO, fontSize: 9, color: 'var(--color-text-disabled)' }}> · currently via {providerLabel(worker)}</span>
+            </div>
+
+            <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-secondary)', lineHeight: 1.7, marginBottom: 16 }}>
+              {worker.purpose}
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ ...RAJ, fontSize: 9, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: 'var(--color-text-disabled)', marginBottom: 8 }}>Tools</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {worker.tools.map(t => (
+                  <span key={t} style={{ ...MONO, fontSize: 8.5, color: 'var(--color-text-muted)', border: '1px solid rgba(var(--color-primary-rgb),0.2)', borderRadius: 5, padding: '3px 7px' }}>{t}</span>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ ...RAJ, fontSize: 9, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: 'var(--color-text-disabled)', marginBottom: 8 }}>
+                Providers &amp; Fallback Order
+              </div>
+              <div style={{ ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', marginBottom: 10 }}>
+                Order: {worker.provider_order.map(p => worker.providers.find(x => x.id === p)?.label || p).join(' → ')}
+              </div>
+              {worker.providers.map(p => (
+                <ProviderCard key={p.id} worker={worker} provider={p} onChanged={reload} />
+              ))}
+            </div>
+          </>
+        )}
+      </motion.div>
+    </motion.div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════
+// Main page
+// ═══════════════════════════════════════════════════════
+export default function AgentsPage() {
+  const { visualPrefs } = useTheme()
+  const [workers, setWorkers] = useState(null)
+  const [error, setError] = useState(null)
+  const [openId, setOpenId] = useState(null)
+  const pollRef = useRef(null)
+
+  const load = useCallback(async () => {
+    try {
+      const { workers } = await getWorkers()
+      setWorkers(workers)
+      setError(null)
+    } catch (e) {
+      setError(e.message)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+    pollRef.current = setInterval(load, POLL_MS)
+    return () => clearInterval(pollRef.current)
+  }, [load])
+
+  const glowEnabled = visualPrefs.glowEffectsEnabled
+  const particlesEnabled = visualPrefs.particlesEnabled
+
+  // Radial layout — angle from top, clockwise, evenly spaced.
+  const positions = (workers || []).map((w, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(1, (workers || []).length) - Math.PI / 2
+    const rx = 38, ry = 34
+    return {
+      id: w.id,
+      x: 50 + rx * Math.cos(angle),
+      y: 50 + ry * Math.sin(angle),
+      color: AGENT_COLOR[w.id] || 'var(--color-primary)',
+    }
+  })
+
+  const activeCount = (workers || []).filter(w => w.status === 'active' || w.status === 'processing').length
+  const unavailableCount = (workers || []).filter(w => w.status === 'unavailable' || w.status === 'missing_configuration').length
+
+  return (
+    <div style={{ padding: '24px 28px', height: '100%', overflowY: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--color-text)' }}>AI Workforce</div>
+          <div style={{ ...MONO, fontSize: 9.5, color: 'var(--color-text-disabled)', marginTop: 2 }}>
+            Nyx's real specialized workers — click a node to configure its providers.
+          </div>
+        </div>
+        {workers && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <StatBox label="AGENTS" value={workers.length} color="var(--color-accent)" />
+            <StatBox label="ACTIVE" value={activeCount} color="#22c55e" dot />
+            {unavailableCount > 0 && <StatBox label="UNAVAILABLE" value={unavailableCount} color="#f87171" dot />}
+            <StatBox
+              label="OLLAMA"
+              value={workers.some(w => w.ollama_reachable) ? 'Reachable' : 'Unreachable'}
+              color={workers.some(w => w.ollama_reachable) ? '#22c55e' : '#f87171'}
+              dot
+            />
           </div>
         )}
       </div>
 
-      {panelOpen && focused && (
-        <AgentPanel agentId={focused.id} onClose={() => setPanelOpen(false)} onChanged={load} />
+      {error && (
+        <div style={{ ...MONO, fontSize: 11, color: '#f87171', padding: '10px 14px', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, marginBottom: 16 }}>
+          Could not reach Nyx backend: {error}
+        </div>
       )}
+
+      {!workers && !error && (
+        <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>Loading agents...</div>
+      )}
+
+      {workers && workers.length === 0 && (
+        <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>No agents registered.</div>
+      )}
+
+      {workers && workers.length > 0 && (
+        <div style={{ position: 'relative', width: '100%', height: 620, minWidth: 700 }}>
+          <Connectors positions={positions} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
+          <CoreNode particlesEnabled={particlesEnabled} glowEnabled={glowEnabled} />
+          <div style={{
+            position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, 105px)',
+            ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.14em',
+          }}>NYX CORE</div>
+          {workers.map((w, i) => (
+            <WorkerNode key={w.id} worker={w} x={positions[i].x} y={positions[i].y} onOpen={setOpenId} glowEnabled={glowEnabled} />
+          ))}
+        </div>
+      )}
+
+      <AnimatePresence>
+        {openId && <WorkerDetailModal workerId={openId} onClose={() => setOpenId(null)} />}
+      </AnimatePresence>
     </div>
   )
 }

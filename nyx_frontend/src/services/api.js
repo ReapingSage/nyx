@@ -84,6 +84,15 @@ export async function exportConstellation() {
   return res.json()
 }
 
+export async function searchConstellation(query, limit = 10) {
+  const res = await fetch(`${API_URL}/api/constellation/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json() // { query, results: [{score, text, source_type, source_id}], mode, message }
+}
+
 export async function openVault() {
   const res = await fetch(`${API_URL}/api/constellation/open-vault`, { method: 'POST' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -535,4 +544,64 @@ export async function importBackup(file) {
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
+}
+
+// ── Workers (Agents dashboard) ───────────────────────
+// Distinct from the older /api/agents (agents_store) endpoints above —
+// these back the real specialized workers: Momus, Hemera, Analyst, OpenClaw.
+export async function getWorkers() {
+  const res = await fetch(`${API_URL}/api/workers`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { workers: [...] }
+}
+
+export async function getWorker(id) {
+  const res = await fetch(`${API_URL}/api/workers/${id}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setWorkerProviderKey(id, provider, key) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, key }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function removeWorkerProviderKey(id, provider) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/${provider}/key`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function setWorkerPriority(id, order) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/priority`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function testWorkerProvider(id, provider) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/${provider}/test`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { ok, message }
 }

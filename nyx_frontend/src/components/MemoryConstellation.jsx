@@ -10,7 +10,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   getConstellation, addMemory, deleteMemory, updateMemory,
-  syncConstellation, exportConstellation, openVault,
+  syncConstellation, exportConstellation, openVault, searchConstellation,
 } from '../services/api.js'
 
 // ── Category config ───────────────────────────────────────────────────────────
@@ -206,6 +206,7 @@ export default function MemoryConstellation() {
     newNodeIds: new Set(), newNodeTimestamps: {},
     filters: { categories: new Set(), sources: new Set(), minConfidence: 0, hideArchived: false },
     scale: 1.0, panX: 0, panY: 0, panning: false, panStart: null,
+    searchActive: false, searchMatchIds: new Set(),
   })
 
   const [apiData,       setApiData]       = useState({ nodes: [], edges: [], stats: {} })
@@ -222,6 +223,40 @@ export default function MemoryConstellation() {
   const [filters,       setFilters]       = useState({ categories: new Set(), sources: new Set(), minConfidence: 0, hideArchived: false })
   const [zoom,          setZoom]          = useState(100)
   const [notification,  setNotification]  = useState(null)
+  const [searchQuery,   setSearchQuery]   = useState('')
+  const [searchResults, setSearchResults] = useState(null)   // null = no search run yet
+  const [searching,     setSearching]     = useState(false)
+  const [searchError,   setSearchError]   = useState(null)
+
+  // Real semantic search — mirrored into the ref the render loop reads from
+  // (matching the existing `filters` pattern) so matched nodes glow and
+  // everything else dims, using genuine backend results, not a client-side
+  // text filter.
+  useEffect(() => {
+    const ids = new Set((searchResults?.results || []).filter(r => r.source_type === 'constellation').map(r => r.source_id))
+    stateRef.current.searchActive = !!searchResults && ids.size > 0
+    stateRef.current.searchMatchIds = ids
+  }, [searchResults])
+
+  const runSearch = useCallback(async (q) => {
+    if (!q.trim()) { setSearchResults(null); setSearchError(null); return }
+    setSearching(true)
+    setSearchError(null)
+    try {
+      const res = await searchConstellation(q.trim())
+      if (res.mode === 'unavailable') {
+        setSearchError(res.message)
+        setSearchResults(null)
+      } else {
+        setSearchResults(res)
+      }
+    } catch (e) {
+      setSearchError(e.message)
+      setSearchResults(null)
+    } finally {
+      setSearching(false)
+    }
+  }, [])
 
   const notify = useCallback((msg, type = 'info') => {
     setNotification({ msg, type })
@@ -437,12 +472,17 @@ export default function MemoryConstellation() {
         const isSel  = node.id === s.selectedId
         const spawnAge = s.newNodeTimestamps[node.id] ? (NOW() - s.newNodeTimestamps[node.id]) / 1000 : 999
         const isNew  = spawnAge < 2.5
+        // Real semantic search match — from GET /api/constellation/search,
+        // never a client-side text filter. Categories are never dimmed
+        // (they're structural, not search results themselves).
+        const isMatch  = s.searchActive && node.type === 'memory' && s.searchMatchIds.has(node.id)
+        const isDimmed = s.searchActive && node.type === 'memory' && !isMatch
 
         if (node.type === 'category') {
           drawCategory(ctx, node, t, isHov, isSel, isNew, spawnAge)
         } else {
           const decayed = node.days_ago > 60
-          drawMemory(ctx, node, t, isHov, isSel, isNew, spawnAge, decayed)
+          drawMemory(ctx, node, t, isHov, isSel, isNew, spawnAge, decayed, isMatch, isDimmed)
         }
       })
 
@@ -637,6 +677,13 @@ export default function MemoryConstellation() {
     } catch { notify('Pin failed', 'error') }
   }, [loadData, notify])
 
+  const selectNodeById = useCallback((nodeId) => {
+    const node = stateRef.current.nmap?.[nodeId]
+    if (!node) return
+    stateRef.current.selectedId = node.id
+    setSelectedNode(node)
+  }, [])
+
   const handleOpenVault = useCallback(async () => {
     try {
       await openVault()
@@ -694,6 +741,19 @@ export default function MemoryConstellation() {
           <canvas
             ref={canvasRef}
             style={{ display: 'block', width: '100%', height: '100%', cursor: 'default' }}
+          />
+
+          <SearchPanel
+            query={searchQuery}
+            setQuery={setSearchQuery}
+            onSearch={runSearch}
+            searching={searching}
+            results={searchResults}
+            error={searchError}
+            onSelectResult={(r) => {
+              if (r.source_type === 'constellation') selectNodeById(r.source_id)
+            }}
+            onClear={() => { setSearchQuery(''); setSearchResults(null); setSearchError(null) }}
           />
 
           {/* No memories yet — subtle hint below NYX center, never blocks the graph */}
@@ -945,11 +1005,12 @@ function drawCategory(ctx, node, t, isHov, isSel, isNew, spawnAge) {
   ctx.restore()
 }
 
-function drawMemory(ctx, node, t, isHov, isSel, isNew, spawnAge, decayed) {
+function drawMemory(ctx, node, t, isHov, isSel, isNew, spawnAge, decayed, isMatch = false, isDimmed = false) {
   const r   = isHov ? node.r + 3 : node.r
   const conf = node.confidence || 0.7
   const baseAlpha = decayed ? 0.45 : conf
   const newBoost  = isNew ? Math.max(0, 1 - spawnAge / 2.5) : 0
+  const dimMul    = isDimmed ? 0.16 : 1   // real search dimming, not a fake filter
   ctx.save()
 
   if (newBoost > 0) {
@@ -964,22 +1025,114 @@ function drawMemory(ctx, node, t, isHov, isSel, isNew, spawnAge, decayed) {
     ctx.globalAlpha = 1
   }
 
-  ctx.globalAlpha = 0.5 + baseAlpha * 0.5
-  ctx.shadowBlur  = isHov ? 18 : 7; ctx.shadowColor = node.color
+  // Search-match ring — pulses on genuine backend-matched nodes only
+  if (isMatch) {
+    const pulse = 0.55 + 0.45 * Math.sin(t * 3)
+    ctx.globalAlpha = pulse * 0.7
+    ctx.shadowBlur = 26; ctx.shadowColor = node.color
+    ctx.strokeStyle = node.color; ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.arc(node.x, node.y, r * (1.7 + 0.15 * pulse), 0, 6.28); ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
+  ctx.globalAlpha = (0.5 + baseAlpha * 0.5) * dimMul
+  ctx.shadowBlur  = isHov ? 18 : (isMatch ? 14 : 7); ctx.shadowColor = node.color
   ctx.fillStyle   = isHov ? hexA(node.color, 0.38) : 'rgba(8,5,20,0.80)'
   ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, 6.28); ctx.fill()
-  ctx.strokeStyle = hexA(node.color, isHov ? 0.88 : 0.45 + conf * 0.3); ctx.lineWidth = 1; ctx.stroke()
+  ctx.strokeStyle = hexA(node.color, isHov ? 0.88 : (isMatch ? 0.9 : 0.45 + conf * 0.3)); ctx.lineWidth = isMatch ? 1.6 : 1; ctx.stroke()
 
   ctx.shadowBlur   = isHov ? 8 : 0; ctx.shadowColor = node.color
   ctx.fillStyle    = decayed ? '#4a4670' : (isHov ? '#F3EDFF' : hexA(node.color, 0.85 + conf * 0.15))
-  ctx.font         = `${isHov ? '600' : '400'} 10px Rajdhani, sans-serif`
+  ctx.font         = `${isHov || isMatch ? '600' : '400'} 10px Rajdhani, sans-serif`
   ctx.textAlign    = 'center'; ctx.textBaseline = 'top'
-  ctx.globalAlpha  = decayed ? 0.5 : 1
+  ctx.globalAlpha  = (decayed ? 0.5 : 1) * dimMul
   ctx.fillText(node.label, node.x, node.y + r + 4)
   ctx.restore()
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+// Real semantic search — GET /api/constellation/search (core/memory_rag.py).
+// Every result shown has a real cosine-similarity score and real source
+// attribution; "why it matched" is the score + source, not invented copy.
+function SearchPanel({ query, setQuery, onSearch, searching, results, error, onSelectResult, onClear }) {
+  const [focused, setFocused] = useState(false)
+
+  return (
+    <div style={{ position: 'absolute', top: 14, left: 14, width: 320, zIndex: 20 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        background: 'rgba(7,5,18,0.85)', backdropFilter: 'blur(14px)',
+        border: `1px solid rgba(150,110,255,${focused ? 0.4 : 0.18})`,
+        borderRadius: 10, padding: '9px 12px',
+      }}>
+        <span style={{ color: '#8E86B8', fontSize: 13 }}>⌕</span>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') onSearch(query) }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder="Semantic search — e.g. dark mode preference"
+          style={{
+            flex: 1, background: 'none', border: 'none', outline: 'none',
+            color: '#EDE8FF', fontFamily: 'Share Tech Mono, monospace', fontSize: 11.5,
+          }}
+        />
+        {searching && <span style={{ color: '#8E86B8', fontSize: 10 }}>...</span>}
+        {(query || results) && !searching && (
+          <button onClick={onClear} style={{ background: 'none', border: 'none', color: '#8E86B8', cursor: 'pointer', fontSize: 13 }}>×</button>
+        )}
+        <button onClick={() => onSearch(query)} style={{
+          background: 'rgba(123,77,255,0.18)', border: '1px solid rgba(123,77,255,0.35)',
+          borderRadius: 6, color: '#C7A6FF', fontSize: 9.5, fontFamily: 'Rajdhani, sans-serif',
+          fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', padding: '4px 9px', cursor: 'pointer',
+        }}>Search</button>
+      </div>
+
+      {error && (
+        <div style={{
+          marginTop: 6, padding: '8px 12px', borderRadius: 8,
+          background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
+          color: '#f87171', fontFamily: 'Share Tech Mono, monospace', fontSize: 10, lineHeight: 1.5,
+        }}>{error}</div>
+      )}
+
+      {results && !error && (
+        <div style={{
+          marginTop: 6, maxHeight: 320, overflowY: 'auto', borderRadius: 10,
+          background: 'rgba(7,5,18,0.92)', backdropFilter: 'blur(14px)',
+          border: '1px solid rgba(150,110,255,0.18)',
+        }}>
+          {results.results.length === 0 ? (
+            <div style={{ padding: '12px 14px', color: '#5E587A', fontFamily: 'Share Tech Mono, monospace', fontSize: 10.5 }}>
+              No matches above the relevance threshold.
+            </div>
+          ) : results.results.map((r, i) => (
+            <div
+              key={`${r.source_type}-${r.source_id}-${i}`}
+              onClick={() => onSelectResult(r)}
+              style={{
+                padding: '9px 13px', cursor: r.source_type === 'constellation' ? 'pointer' : 'default',
+                borderBottom: i < results.results.length - 1 ? '1px solid rgba(150,110,255,0.08)' : 'none',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(123,77,255,0.08)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.1em', color: r.source_type === 'constellation' ? '#C7A6FF' : '#8E86B8' }}>
+                  {r.source_type === 'constellation' ? 'CONSTELLATION NODE' : `VAULT · ${r.source_id}`}
+                </span>
+                <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 9, color: '#5E587A' }}>{(r.score * 100).toFixed(0)}%</span>
+              </div>
+              <div style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 10.5, color: '#C9C3E8', lineHeight: 1.4 }}>{r.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 const zoomBtnStyle = { width: 32, height: 32, background: 'none', border: 'none', color: '#8E86B8', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }
 const controlBtnStyle = { height: 32, padding: '0 14px', background: 'rgba(7,5,18,0.80)', backdropFilter: 'blur(14px)', border: '1px solid rgba(100,70,220,0.18)', borderRadius: 8, cursor: 'pointer', fontFamily: 'Rajdhani, sans-serif', fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', color: '#8E86B8' }
