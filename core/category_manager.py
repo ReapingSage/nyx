@@ -410,12 +410,21 @@ def reassign_all() -> dict:
 
 
 def category_counts() -> dict[str, int]:
-    """Real per-category node counts — what the Constellation uses to
-    decide which categories are actually visible (only-when-populated)."""
+    """Real per-category PRIMARY-node counts — what the Constellation uses
+    to decide which category regions are actually visible.
+
+    Primary-only is deliberate, not an approximation: a node is only ever
+    spatially positioned inside its primary category's region (a
+    secondary category just nudges its position slightly, it never moves
+    the node into that region). Counting secondary memberships here would
+    light up a region's bubble/label with no node actually sitting in it
+    — exactly the "empty-looking bubble" bug this must not reintroduce.
+    """
     counts: dict[str, int] = {}
     for cats in _load_assignments().values():
-        for c in cats:
-            counts[c["category_id"]] = counts.get(c["category_id"], 0) + 1
+        primary = next((c for c in cats if c.get("is_primary")), None)
+        if primary:
+            counts[primary["category_id"]] = counts.get(primary["category_id"], 0) + 1
     return counts
 
 

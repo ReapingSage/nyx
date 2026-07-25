@@ -519,12 +519,24 @@ function RightSidebar({
     ? (apiData.edges || []).filter(e => e.source === selectedNode.id || e.target === selectedNode.id)
     : []
   const activeCategory = !selectedNode && activeCategoryId ? categories.find(c => c.id === activeCategoryId) : null
+  // Primary-only, matching the region/bubble itself — a node only ever
+  // physically sits in its primary category's region (secondary just
+  // nudges its position), so listing secondary-tagged nodes here would
+  // disagree with both the bubble's real count and what's actually
+  // visible in that part of the scene.
   const activeCategoryNodes = activeCategory
     ? (apiData.nodes || []).filter(n => {
         const cats = nodeCategoryMap[n.id] || []
-        return cats.some(c => c.category_id === activeCategoryId) || n.category === activeCategoryId
+        const primary = cats.find(c => c.is_primary)
+        return primary ? primary.category_id === activeCategoryId : n.category === activeCategoryId
       })
     : []
+  const activeCategorySecondaryCount = activeCategory
+    ? (apiData.nodes || []).filter(n => {
+        const cats = nodeCategoryMap[n.id] || []
+        return cats.some(c => !c.is_primary && c.category_id === activeCategoryId)
+      }).length
+    : 0
 
   return (
     <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 12px', overflowY: 'auto', background: 'rgba(4,3,12,0.60)', backdropFilter: 'blur(22px)', borderLeft: '1px solid rgba(100,70,220,0.13)' }}>
@@ -634,7 +646,8 @@ function RightSidebar({
               <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 11, color: '#9d96c0', lineHeight: 1.5, margin: '6px 0 8px' }}>{activeCategory.description}</div>
             )}
             <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: '#6B6394', marginBottom: 8 }}>
-              {categoryCounts?.[activeCategory.id] ?? activeCategoryNodes.length} real member{activeCategoryNodes.length === 1 ? '' : 's'}
+              {activeCategoryNodes.length} real member{activeCategoryNodes.length === 1 ? '' : 's'}
+              {activeCategorySecondaryCount > 0 && ` · +${activeCategorySecondaryCount} tagged secondarily`}
             </div>
             <div style={{ maxHeight: 220, overflowY: 'auto' }}>
               {activeCategoryNodes.map(n => (
