@@ -20,7 +20,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useTheme } from '../utils/themeContext.jsx'
 import {
   getWorkers, getWorker, setWorkerProviderKey, removeWorkerProviderKey,
-  setWorkerPriority, testWorkerProvider,
+  setWorkerPriority, testWorkerProvider, getTasks,
 } from '../services/api.js'
 
 const RAJ  = { fontFamily: 'Rajdhani, sans-serif' }
@@ -46,6 +46,109 @@ function statusMeta(status) {
 function providerLabel(worker) {
   const p = worker.providers?.find(p => p.id === worker.active_provider)
   return p?.label || worker.active_provider || 'Unknown'
+}
+
+// Lucide's Brain glyph, inlined at card scale — same path data used for
+// the "Self Task" quick-launch type on the Tasks page, so this card
+// reads as the same real feature, not a new icon invented for this spot.
+function BrainGlyph({ size = 30, color = 'currentColor' }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18z" />
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18z" />
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+      <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
+      <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
+      <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
+      <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
+      <path d="M6 18a4 4 0 0 1-1.967-.516" />
+      <path d="M19.967 17.484A4 4 0 0 1 18 18" />
+    </svg>
+  )
+}
+
+// ── Task Queue CTA card — real counts from /api/tasks (task_store.py),
+// same clickable-CTA-card treatment as the sidebar's "Global View" card
+// (title + visual thumbnail + status row + "OPEN" link). This is the
+// agent plugin's missing entry point into real, self-directed tasks —
+// no fabricated queue, no invented task rows.
+function TasksCard({ onNavigate, glowEnabled, particlesEnabled }) {
+  const [tasks, setTasks] = useState(null)
+  const [hovered, setHovered] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => getTasks().then(r => { if (!cancelled) setTasks(r.tasks || []) }).catch(() => {})
+    load()
+    const id = setInterval(load, 15000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  const counts = (tasks || []).reduce((acc, t) => {
+    const key = (t.status || '').toLowerCase()
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+  const running = counts.running || 0
+  const queued  = counts.queued || 0
+  const total   = (tasks || []).length
+
+  return (
+    <div
+      onClick={() => onNavigate?.('tasks')}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        marginTop: 22, cursor: 'pointer', maxWidth: 360,
+        background: 'rgba(6,7,20,0.9)', borderRadius: 14, padding: '14px 16px',
+        border: `1px solid ${hovered ? 'rgba(var(--color-primary-rgb),0.5)' : 'rgba(var(--color-primary-rgb),0.18)'}`,
+        boxShadow: glowEnabled ? `0 0 ${hovered ? 34 : 20}px rgba(var(--color-primary-rgb),${hovered ? 0.2 : 0.10}), inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
+        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
+        transition: 'border-color 0.2s, box-shadow 0.2s',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ ...MONO, fontSize: 9, fontWeight: 600, letterSpacing: '0.20em', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Agent Task Queue</span>
+        <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.12em', transition: 'color 0.2s' }}>OPEN →</span>
+      </div>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 14, height: 60, marginBottom: 11,
+        borderRadius: 8, padding: '0 14px', background: 'rgba(4,2,18,0.65)', border: '1px solid rgba(var(--color-primary-rgb),0.18)',
+      }}>
+        <div style={{
+          width: 42, height: 42, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'radial-gradient(circle at 35% 30%, var(--color-accent), var(--color-primary) 70%)',
+          boxShadow: glowEnabled ? '0 0 16px rgba(var(--color-primary-rgb),0.5)' : 'none',
+        }}>
+          <motion.div
+            animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
+            transition={particlesEnabled ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' } : {}}
+          >
+            <BrainGlyph size={22} color="#fff" />
+          </motion.div>
+        </div>
+        <div>
+          <div style={{ ...RAJ, fontSize: 18, fontWeight: 700, color: 'var(--color-text)' }}>{tasks === null ? '—' : total}</div>
+          <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>
+            {tasks === null ? 'LOADING' : total === 0 ? 'NO TASKS YET' : 'TOTAL TASKS'}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ width: 5, height: 5, borderRadius: '50%', background: running > 0 ? '#38bdf8' : '#22c55e', boxShadow: `0 0 5px ${running > 0 ? '#38bdf8' : '#22c55e'}` }} />
+          <span style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>
+            {running > 0 ? `${running} RUNNING` : queued > 0 ? `${queued} QUEUED` : 'IDLE'}
+          </span>
+        </div>
+        <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.10em', transition: 'color 0.2s' }}>
+          OPEN TASKS →
+        </span>
+      </div>
+    </div>
+  )
 }
 
 // ── Top stat box — matches the reference's boxed stat readouts. Every
@@ -469,7 +572,7 @@ function WorkerDetailModal({ workerId, onClose }) {
 // ═══════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════
-export default function AgentsPage() {
+export default function AgentsPage({ onNavigate }) {
   const { visualPrefs } = useTheme()
   const [workers, setWorkers] = useState(null)
   const [error, setError] = useState(null)
@@ -561,6 +664,8 @@ export default function AgentsPage() {
           ))}
         </div>
       )}
+
+      <TasksCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
 
       <AnimatePresence>
         {openId && <WorkerDetailModal workerId={openId} onClose={() => setOpenId(null)} />}

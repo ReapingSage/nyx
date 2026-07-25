@@ -314,7 +314,7 @@ export default function App() {
                   ) : activePage === 'music' ? (
                     <MusicPage />
                   ) : activePage === 'agents' ? (
-                    <AgentsPage />
+                    <AgentsPage onNavigate={handleNav} />
                   ) : (
                     <>
                       {!isMobile && <LeftPanels visible />}
