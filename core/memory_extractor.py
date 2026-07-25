@@ -266,6 +266,8 @@ def extract_and_save(text: str, source: str = "chat") -> list[dict]:
     if not memories:
         return []
 
+    from core import category_manager
+
     saved = []
     for mem in memories:
         node = constellation.add_memory(
@@ -277,6 +279,10 @@ def extract_and_save(text: str, source: str = "chat") -> list[dict]:
         )
         if node.get('id'):
             saved.append(node)
+            # Real category assignment right away, not just the legacy
+            # single-category field — keeps the node's region bubble and
+            # count correct from the moment it's created.
+            category_manager.categorize_new_node(node)
 
     for i in range(len(saved)):
         for j in range(i + 1, min(i + 4, len(saved))):
@@ -317,6 +323,8 @@ def scan_vault_memory_files() -> list[dict]:
         r'|—\s*',                        # em-dash prefix
     )
 
+    from core import category_manager
+
     memory_dir = vault_bridge.get_memory_dir()
     if not memory_dir.exists():
         return []
@@ -349,6 +357,7 @@ def scan_vault_memory_files() -> list[dict]:
                 )
                 if node.get('id'):
                     saved.append(node)
+                    category_manager.categorize_new_node(node)
         except Exception as e:
             log.warning(f"[extractor] Could not scan vault file {md_file.name}: {e}")
 

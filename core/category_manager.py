@@ -367,6 +367,31 @@ def assign_categories_for_node(node_id: str, node_text: str) -> list[dict] | Non
     return new_cats
 
 
+def categorize_new_node(node: dict) -> None:
+    """Best-effort auto-categorization for a just-created node — called
+    right after every constellation.add_memory(), so a node's category
+    region (and its real count) is correct from the moment it exists
+    instead of lagging until the next manual 'Categorize Memories' pass.
+
+    add_memory() also returns the existing node (via reinforce()) when a
+    label already matches one on record, so callers can't tell "genuinely
+    new" from "mentioned again" just from the return value — this checks
+    for that directly and skips nodes that already have an assignment,
+    which both avoids a wasted embedding call on every reinforcement and
+    protects an existing manual/automatic categorization from being
+    needlessly recomputed on repeat mentions.
+
+    Failures (e.g. embeddings unavailable) are swallowed: memory saving
+    must never fail because categorization couldn't run."""
+    if get_node_categories(node["id"]):
+        return
+    try:
+        from core.memory_rag import _node_text
+        assign_categories_for_node(node["id"], _node_text(node))
+    except Exception as e:
+        log.debug(f"[categories] Auto-categorization skipped for new node: {e}")
+
+
 def reassign_all() -> dict:
     """Re-run automatic categorization for every node — the real backing
     for a 'recategorize' action. Manual corrections are preserved."""

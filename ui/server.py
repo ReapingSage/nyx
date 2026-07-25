@@ -536,6 +536,14 @@ async def add_memory(req: MemoryNode):
         importance=req.importance,
         tags=req.tags,
     )
+    # Real category assignment right away — otherwise this node has no
+    # multi-label categories until the next manual "Categorize Memories"
+    # pass, which left its category region's bubble/count out of sync
+    # with a node that visually already existed in that region.
+    import asyncio
+    from core import category_manager
+    await asyncio.get_event_loop().run_in_executor(None, category_manager.categorize_new_node, node)
+
     # Mirror to the active storage provider's vault
     try:
         from core.vault_bridge import get_memory_dir
@@ -573,8 +581,12 @@ async def delete_memory(node_id: str):
 
 @app.post("/api/constellation/sync")
 async def sync_constellation():
+    import asyncio
     from core.memory_extractor import scan_conversation_logs
-    new_nodes = scan_conversation_logs()
+    # Off the event loop — each newly-found memory now also gets a real
+    # embedding call for auto-categorization, so this can take a while on
+    # a large sync; blocking every other request behind it would be worse.
+    new_nodes = await asyncio.get_event_loop().run_in_executor(None, scan_conversation_logs)
     return {
         "status":      "synced",
         "new_memories": len(new_nodes),
