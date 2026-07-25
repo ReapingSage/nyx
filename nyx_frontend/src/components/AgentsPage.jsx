@@ -826,7 +826,7 @@ export default function AgentsPage({ onNavigate }) {
   // hub's top/bottom edge instead of running flush against it.
   const positions = useMemo(() => (workers || []).map((w, i) => {
     const angle = (2 * Math.PI * i) / Math.max(1, (workers || []).length) - Math.PI / 2
-    const rx = 36, ry = 31
+    const rx = 38, ry = 34
     return {
       id: w.id,
       angle,
@@ -844,7 +844,7 @@ export default function AgentsPage({ onNavigate }) {
   const ports = positions.map(p => ({ ...p, hot: hoveredId === p.id }))
 
   return (
-    <div style={{ position: 'relative', height: '100%', overflow: 'hidden' }}>
+    <div style={{ flex: 1, position: 'relative', height: '100%', overflow: 'hidden', minWidth: 0 }}>
 
       {/* Mountain/skyline foreground (Background.jsx's global canvas, when
           that bg style is selected) reduced to a subtle lower-edge fade
@@ -910,8 +910,8 @@ export default function AgentsPage({ onNavigate }) {
             <div
               onMouseLeave={() => setHoveredId(null)}
               style={{
-                position: 'relative', flex: 1, minWidth: 420, minHeight: 420,
-                borderRadius: 16, overflow: 'hidden',
+                position: 'relative', flex: 1, minWidth: 480, minHeight: 460,
+                borderRadius: 16,
                 border: '1px solid rgba(var(--color-primary-rgb),0.10)',
                 background: `
                   radial-gradient(circle at 50% 50%, rgba(var(--color-primary-rgb),0.05), transparent 60%),
