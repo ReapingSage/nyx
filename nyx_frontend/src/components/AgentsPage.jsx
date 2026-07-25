@@ -20,7 +20,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useTheme } from '../utils/themeContext.jsx'
 import {
   getWorkers, getWorker, setWorkerProviderKey, removeWorkerProviderKey,
-  setWorkerPriority, testWorkerProvider, getTasks,
+  setWorkerPriority, testWorkerProvider, getTasks, getConstellation,
 } from '../services/api.js'
 
 const RAJ  = { fontFamily: 'Rajdhani, sans-serif' }
@@ -67,14 +67,108 @@ function BrainGlyph({ size = 30, color = 'currentColor' }) {
   )
 }
 
-// ── Task Queue CTA card — real counts from /api/tasks (task_store.py),
-// same clickable-CTA-card treatment as the sidebar's "Global View" card
-// (title + visual thumbnail + status row + "OPEN" link). This is the
-// agent plugin's missing entry point into real, self-directed tasks —
-// no fabricated queue, no invented task rows.
+// Checklist glyph — same path data as the sidebar's 'check-square' icon
+// (already used for the Tasks nav item), given to the Task Queue card so
+// it no longer shares the Brain glyph with the Constellation card.
+function ChecklistGlyph({ size = 22, color = 'currentColor' }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
+      <polyline points="9 11 12 14 22 4" />
+      <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+    </svg>
+  )
+}
+
+// ── Shared vertical CTA card — icon badge, title, real stat, real status
+// row, "OPEN" link. Same clickable-card treatment as the sidebar's
+// "Global View" card, just stacked vertically instead of landscape so two
+// of these can sit side-by-side in a narrow right-hand column.
+function SideCTACard({ icon, title, statValue, statLabel, statusColor, statusText, ctaText, onClick, glowEnabled, particlesEnabled }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        cursor: 'pointer', width: '100%', boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
+        background: 'rgba(6,7,20,0.9)', borderRadius: 14, padding: '18px 14px',
+        border: `1px solid ${hovered ? 'rgba(var(--color-primary-rgb),0.5)' : 'rgba(var(--color-primary-rgb),0.18)'}`,
+        boxShadow: glowEnabled ? `0 0 ${hovered ? 30 : 18}px rgba(var(--color-primary-rgb),${hovered ? 0.2 : 0.10}), inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
+        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
+        transition: 'border-color 0.2s, box-shadow 0.2s',
+      }}
+    >
+      <div style={{
+        width: 52, height: 52, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'radial-gradient(circle at 35% 30%, var(--color-accent), var(--color-primary) 70%)',
+        boxShadow: glowEnabled ? '0 0 18px rgba(var(--color-primary-rgb),0.5)' : 'none', marginBottom: 11,
+      }}>
+        <motion.div
+          animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
+          transition={particlesEnabled ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' } : {}}
+        >
+          {icon}
+        </motion.div>
+      </div>
+
+      <div style={{ ...MONO, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.16em', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 9 }}>
+        {title}
+      </div>
+
+      <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, color: 'var(--color-text)' }}>{statValue}</div>
+      <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em', marginBottom: 11 }}>{statLabel}</div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 11 }}>
+        <div style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, boxShadow: `0 0 5px ${statusColor}` }} />
+        <span style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>{statusText}</span>
+      </div>
+
+      <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.12em', transition: 'color 0.2s' }}>
+        {ctaText}
+      </span>
+    </div>
+  )
+}
+
+// ── Memory Constellation CTA card — real stats from /api/constellation.
+// Carries the Brain glyph (Constellation is Nyx's actual memory/"brain"
+// feature) — the Task Queue card below gets its own distinct icon instead.
+function ConstellationCard({ onNavigate, glowEnabled, particlesEnabled }) {
+  const [stats, setStats] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => getConstellation().then(r => { if (!cancelled) setStats(r.stats || null) }).catch(() => {})
+    load()
+    const id = setInterval(load, 15000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  const total = stats ? (stats.total_memories ?? 0) : null
+
+  return (
+    <SideCTACard
+      icon={<BrainGlyph size={22} color="#fff" />}
+      title="Memory Constellation"
+      statValue={total === null ? '—' : total}
+      statLabel={total === null ? 'LOADING' : total === 0 ? 'NO MEMORIES YET' : `REAL MEMOR${total === 1 ? 'Y' : 'IES'}`}
+      statusColor={total > 0 ? '#22c55e' : 'var(--color-text-disabled)'}
+      statusText={total > 0 ? 'LIVE' : 'EMPTY'}
+      ctaText="OPEN CONSTELLATION →"
+      onClick={() => onNavigate?.('memory')}
+      glowEnabled={glowEnabled}
+      particlesEnabled={particlesEnabled}
+    />
+  )
+}
+
+// ── Task Queue CTA card — real counts from /api/tasks (task_store.py).
+// This is the agent plugin's missing entry point into real, self-directed
+// tasks — no fabricated queue, no invented task rows.
 function TasksCard({ onNavigate, glowEnabled, particlesEnabled }) {
   const [tasks, setTasks] = useState(null)
-  const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -94,60 +188,18 @@ function TasksCard({ onNavigate, glowEnabled, particlesEnabled }) {
   const total   = (tasks || []).length
 
   return (
-    <div
+    <SideCTACard
+      icon={<ChecklistGlyph size={22} color="#fff" />}
+      title="Agent Task Queue"
+      statValue={tasks === null ? '—' : total}
+      statLabel={tasks === null ? 'LOADING' : total === 0 ? 'NO TASKS YET' : 'TOTAL TASKS'}
+      statusColor={running > 0 ? '#38bdf8' : '#22c55e'}
+      statusText={running > 0 ? `${running} RUNNING` : queued > 0 ? `${queued} QUEUED` : 'IDLE'}
+      ctaText="OPEN TASKS →"
       onClick={() => onNavigate?.('tasks')}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        marginTop: 22, cursor: 'pointer', maxWidth: 360,
-        background: 'rgba(6,7,20,0.9)', borderRadius: 14, padding: '14px 16px',
-        border: `1px solid ${hovered ? 'rgba(var(--color-primary-rgb),0.5)' : 'rgba(var(--color-primary-rgb),0.18)'}`,
-        boxShadow: glowEnabled ? `0 0 ${hovered ? 34 : 20}px rgba(var(--color-primary-rgb),${hovered ? 0.2 : 0.10}), inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
-        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-        transition: 'border-color 0.2s, box-shadow 0.2s',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <span style={{ ...MONO, fontSize: 9, fontWeight: 600, letterSpacing: '0.20em', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Agent Task Queue</span>
-        <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.12em', transition: 'color 0.2s' }}>OPEN →</span>
-      </div>
-
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 14, height: 60, marginBottom: 11,
-        borderRadius: 8, padding: '0 14px', background: 'rgba(4,2,18,0.65)', border: '1px solid rgba(var(--color-primary-rgb),0.18)',
-      }}>
-        <div style={{
-          width: 42, height: 42, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'radial-gradient(circle at 35% 30%, var(--color-accent), var(--color-primary) 70%)',
-          boxShadow: glowEnabled ? '0 0 16px rgba(var(--color-primary-rgb),0.5)' : 'none',
-        }}>
-          <motion.div
-            animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
-            transition={particlesEnabled ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' } : {}}
-          >
-            <BrainGlyph size={22} color="#fff" />
-          </motion.div>
-        </div>
-        <div>
-          <div style={{ ...RAJ, fontSize: 18, fontWeight: 700, color: 'var(--color-text)' }}>{tasks === null ? '—' : total}</div>
-          <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>
-            {tasks === null ? 'LOADING' : total === 0 ? 'NO TASKS YET' : 'TOTAL TASKS'}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 5, height: 5, borderRadius: '50%', background: running > 0 ? '#38bdf8' : '#22c55e', boxShadow: `0 0 5px ${running > 0 ? '#38bdf8' : '#22c55e'}` }} />
-          <span style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>
-            {running > 0 ? `${running} RUNNING` : queued > 0 ? `${queued} QUEUED` : 'IDLE'}
-          </span>
-        </div>
-        <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.10em', transition: 'color 0.2s' }}>
-          OPEN TASKS →
-        </span>
-      </div>
-    </div>
+      glowEnabled={glowEnabled}
+      particlesEnabled={particlesEnabled}
+    />
   )
 }
 
@@ -614,58 +666,65 @@ export default function AgentsPage({ onNavigate }) {
   const unavailableCount = (workers || []).filter(w => w.status === 'unavailable' || w.status === 'missing_configuration').length
 
   return (
-    <div style={{ padding: '24px 28px', height: '100%', overflowY: 'auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--color-text)' }}>AI Workforce</div>
-          <div style={{ ...MONO, fontSize: 9.5, color: 'var(--color-text-disabled)', marginTop: 2 }}>
-            Nyx's real specialized workers — click a node to configure its providers.
+    <div style={{ padding: '24px 28px', height: '100%', overflowY: 'auto', display: 'flex', gap: 22 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--color-text)' }}>AI Workforce</div>
+            <div style={{ ...MONO, fontSize: 9.5, color: 'var(--color-text-disabled)', marginTop: 2 }}>
+              Nyx's real specialized workers — click a node to configure its providers.
+            </div>
           </div>
+          {workers && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <StatBox label="AGENTS" value={workers.length} color="var(--color-accent)" />
+              <StatBox label="ACTIVE" value={activeCount} color="#22c55e" dot />
+              {unavailableCount > 0 && <StatBox label="UNAVAILABLE" value={unavailableCount} color="#f87171" dot />}
+              <StatBox
+                label="OLLAMA"
+                value={workers.some(w => w.ollama_reachable) ? 'Reachable' : 'Unreachable'}
+                color={workers.some(w => w.ollama_reachable) ? '#22c55e' : '#f87171'}
+                dot
+              />
+            </div>
+          )}
         </div>
-        {workers && (
-          <div style={{ display: 'flex', gap: 10 }}>
-            <StatBox label="AGENTS" value={workers.length} color="var(--color-accent)" />
-            <StatBox label="ACTIVE" value={activeCount} color="#22c55e" dot />
-            {unavailableCount > 0 && <StatBox label="UNAVAILABLE" value={unavailableCount} color="#f87171" dot />}
-            <StatBox
-              label="OLLAMA"
-              value={workers.some(w => w.ollama_reachable) ? 'Reachable' : 'Unreachable'}
-              color={workers.some(w => w.ollama_reachable) ? '#22c55e' : '#f87171'}
-              dot
-            />
+
+        {error && (
+          <div style={{ ...MONO, fontSize: 11, color: '#f87171', padding: '10px 14px', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, marginBottom: 16 }}>
+            Could not reach Nyx backend: {error}
+          </div>
+        )}
+
+        {!workers && !error && (
+          <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>Loading agents...</div>
+        )}
+
+        {workers && workers.length === 0 && (
+          <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>No agents registered.</div>
+        )}
+
+        {workers && workers.length > 0 && (
+          <div style={{ position: 'relative', width: '100%', height: 620, minWidth: 700 }}>
+            <Connectors positions={positions} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
+            <CoreNode particlesEnabled={particlesEnabled} glowEnabled={glowEnabled} />
+            <div style={{
+              position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, 105px)',
+              ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.14em',
+            }}>NYX CORE</div>
+            {workers.map((w, i) => (
+              <WorkerNode key={w.id} worker={w} x={positions[i].x} y={positions[i].y} onOpen={setOpenId} glowEnabled={glowEnabled} />
+            ))}
           </div>
         )}
       </div>
 
-      {error && (
-        <div style={{ ...MONO, fontSize: 11, color: '#f87171', padding: '10px 14px', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, marginBottom: 16 }}>
-          Could not reach Nyx backend: {error}
-        </div>
-      )}
-
-      {!workers && !error && (
-        <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>Loading agents...</div>
-      )}
-
-      {workers && workers.length === 0 && (
-        <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>No agents registered.</div>
-      )}
-
-      {workers && workers.length > 0 && (
-        <div style={{ position: 'relative', width: '100%', height: 620, minWidth: 700 }}>
-          <Connectors positions={positions} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
-          <CoreNode particlesEnabled={particlesEnabled} glowEnabled={glowEnabled} />
-          <div style={{
-            position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, 105px)',
-            ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.14em',
-          }}>NYX CORE</div>
-          {workers.map((w, i) => (
-            <WorkerNode key={w.id} worker={w} x={positions[i].x} y={positions[i].y} onOpen={setOpenId} glowEnabled={glowEnabled} />
-          ))}
-        </div>
-      )}
-
-      <TasksCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
+      {/* Right-hand vertical CTA column — Constellation ("the brain") above
+          the Task Queue card, same narrow width, both real-data-driven. */}
+      <div style={{ width: 200, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 2 }}>
+        <ConstellationCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
+        <TasksCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
+      </div>
 
       <AnimatePresence>
         {openId && <WorkerDetailModal workerId={openId} onClose={() => setOpenId(null)} />}
