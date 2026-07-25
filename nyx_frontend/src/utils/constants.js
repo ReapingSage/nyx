@@ -19,7 +19,7 @@ export const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard',  icon: 'grid' },
   { id: 'systems',   label: 'Systems',    icon: 'cpu' },
   { id: 'tasks',     label: 'Tasks',      icon: 'check-square' },
-  { id: 'memory',    label: 'Memory',     icon: 'database' },
+  { id: 'memory',    label: 'Memory',     icon: 'brain' },
   { id: 'network',   label: 'Network',    icon: 'globe' },
   { id: 'models',    label: 'Models',     icon: 'box' },
   { id: 'plugins',   label: 'Plugins',    icon: 'plug' },
