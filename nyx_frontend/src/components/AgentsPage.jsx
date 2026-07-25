@@ -1,12 +1,19 @@
 /**
- * AgentsPage.jsx — Agents (AI workforce control center)
+ * AgentsPage.jsx — Agents (AI workforce command center)
  *
  * Shows Nyx's real specialized workers — Momus, Hemera, Analyst, OpenClaw —
- * as nodes connected to a central Nyx core, each showing real status,
+ * as modules connected to a central Nyx core, each showing real status,
  * real active provider, and a configuration panel for real provider/API-key
- * management with health/fallback info. Every value here comes from
- * /api/workers (core/agent_registry.py) — nothing is fabricated. If real
- * data isn't available, the UI says so rather than inventing a number.
+ * management with health/fallback info. Supporting panels (Memory Link,
+ * Provider Health, Task Queue, Workforce Activity) are all backed by real
+ * endpoints — /api/workers, /api/tasks, /api/constellation, /api/events.
+ * If real data isn't available or is empty, the UI says so rather than
+ * inventing a number, a log entry, or a percentage.
+ *
+ * Visual language is inspired by a denser reference "AI Core" mockup, but
+ * only its density/hierarchy/lighting principles were adapted — the real
+ * four-agent roster, real data, and existing NYX shell are unchanged. No
+ * fictional agents, metrics, or activity were added.
  *
  * Replaces the previous room/character rendering (FacilityView.jsx, and the
  * abandoned PixiRoom.jsx/ThreeRoom.jsx prototypes) with a node/core layout —
@@ -15,17 +22,19 @@
  * calls into.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTheme } from '../utils/themeContext.jsx'
 import {
   getWorkers, getWorker, setWorkerProviderKey, removeWorkerProviderKey,
   setWorkerPriority, testWorkerProvider, getTasks, getConstellation,
+  getCategoryCounts, getEvents,
 } from '../services/api.js'
 
 const RAJ  = { fontFamily: 'Rajdhani, sans-serif' }
 const MONO = { fontFamily: 'Share Tech Mono, monospace' }
-const POLL_MS = 5000
+const WORKERS_POLL_MS = 5000
+const SIDE_DATA_POLL_MS = 15000
 
 const STATUS_META = {
   active:                 { label: 'Active',              color: '#22c55e' },
@@ -34,8 +43,9 @@ const STATUS_META = {
   missing_configuration:  { label: 'Missing Configuration', color: '#facc15' },
 }
 
-// Per-agent identity color (badge) — distinct from status color (border/bar
-// below), matching the reference's varied blue/gold/purple palette per card.
+// Per-agent identity color (icon glow / border / connection route) — kept
+// distinct from status color (green/yellow/red/blue), matching the
+// reference's varied palette-per-module without breaking the NYX system.
 const AGENT_GLYPH = { momus: '⚖', hemera: '☀', analyst: '✦', openclaw: '⚙' }
 const AGENT_COLOR = { momus: '#eab308', hemera: '#f97316', analyst: '#3b82f6', openclaw: '#a855f7' }
 
@@ -43,15 +53,41 @@ function statusMeta(status) {
   return STATUS_META[status] || { label: status || 'Unknown', color: 'var(--color-text-disabled)' }
 }
 
-function providerLabel(worker) {
-  const p = worker.providers?.find(p => p.id === worker.active_provider)
-  return p?.label || worker.active_provider || 'Unknown'
+function activeProviderOf(worker) {
+  return worker.providers?.find(p => p.id === worker.active_provider)
 }
 
-// Lucide's Brain glyph, inlined at card scale — same path data used for
-// the "Self Task" quick-launch type on the Tasks page, so this card
-// reads as the same real feature, not a new icon invented for this spot.
-function BrainGlyph({ size = 30, color = 'currentColor' }) {
+function providerLabel(worker) {
+  return activeProviderOf(worker)?.label || worker.active_provider || 'Unknown'
+}
+
+// Real key-connection state for the worker's currently active provider —
+// never invented, directly reflects provider.requires_key/configured.
+function keyStateOf(worker) {
+  const p = activeProviderOf(worker)
+  if (!p) return { label: 'UNKNOWN', color: 'var(--color-text-disabled)' }
+  if (!p.requires_key) return { label: 'BUILT-IN', color: 'var(--color-text-disabled)' }
+  return p.configured
+    ? { label: 'KEY CONNECTED', color: '#22c55e' }
+    : { label: 'KEY MISSING', color: '#facc15' }
+}
+
+function relTime(iso) {
+  if (!iso) return null
+  const d = (Date.now() - new Date(iso)) / 1000
+  if (d < 5) return 'just now'
+  if (d < 60) return `${Math.floor(d)}s ago`
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`
+  return `${Math.floor(d / 86400)}d ago`
+}
+
+// ═══════════════════════════════════════════════════════
+// Icons — inline SVGs at a consistent stroke weight, no external icon
+// dependency for this page's small badges.
+// ═══════════════════════════════════════════════════════
+
+function BrainGlyph({ size = 22, color = 'currentColor' }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
       <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18z" />
@@ -67,10 +103,8 @@ function BrainGlyph({ size = 30, color = 'currentColor' }) {
   )
 }
 
-// Checklist glyph — same path data as the sidebar's 'check-square' icon
-// (already used for the Tasks nav item), given to the Task Queue card so
-// it no longer shares the Brain glyph with the Constellation card.
-function ChecklistGlyph({ size = 22, color = 'currentColor' }) {
+// Same path data as the sidebar's 'check-square' icon (Tasks nav item).
+function ChecklistGlyph({ size = 16, color = 'currentColor' }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
       <polyline points="9 11 12 14 22 4" />
@@ -79,144 +113,42 @@ function ChecklistGlyph({ size = 22, color = 'currentColor' }) {
   )
 }
 
-// ── Shared vertical CTA card — icon badge, title, real stat, real status
-// row, "OPEN" link. Same clickable-card treatment as the sidebar's
-// "Global View" card, just stacked vertically instead of landscape so two
-// of these can sit side-by-side in a narrow right-hand column.
-function SideCTACard({ icon, title, statValue, statLabel, statusColor, statusText, ctaText, onClick, glowEnabled, particlesEnabled }) {
-  const [hovered, setHovered] = useState(false)
+function ActivityGlyph({ size = 16, color = 'currentColor' }) {
   return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        cursor: 'pointer', width: '100%', boxSizing: 'border-box',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
-        background: 'rgba(6,7,20,0.9)', borderRadius: 14, padding: '18px 14px',
-        border: `1px solid ${hovered ? 'rgba(var(--color-primary-rgb),0.5)' : 'rgba(var(--color-primary-rgb),0.18)'}`,
-        boxShadow: glowEnabled ? `0 0 ${hovered ? 30 : 18}px rgba(var(--color-primary-rgb),${hovered ? 0.2 : 0.10}), inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
-        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-        transition: 'border-color 0.2s, box-shadow 0.2s',
-      }}
-    >
-      <div style={{
-        width: 52, height: 52, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'radial-gradient(circle at 35% 30%, var(--color-accent), var(--color-primary) 70%)',
-        boxShadow: glowEnabled ? '0 0 18px rgba(var(--color-primary-rgb),0.5)' : 'none', marginBottom: 11,
-      }}>
-        <motion.div
-          animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
-          transition={particlesEnabled ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' } : {}}
-        >
-          {icon}
-        </motion.div>
-      </div>
-
-      <div style={{ ...MONO, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.16em', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 9 }}>
-        {title}
-      </div>
-
-      <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, color: 'var(--color-text)' }}>{statValue}</div>
-      <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em', marginBottom: 11 }}>{statLabel}</div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 11 }}>
-        <div style={{ width: 5, height: 5, borderRadius: '50%', background: statusColor, boxShadow: `0 0 5px ${statusColor}` }} />
-        <span style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.10em' }}>{statusText}</span>
-      </div>
-
-      <span style={{ ...MONO, fontSize: 8, color: hovered ? 'var(--color-accent)' : 'var(--color-primary)', letterSpacing: '0.12em', transition: 'color 0.2s' }}>
-        {ctaText}
-      </span>
-    </div>
+    <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
+      <polyline points="3 12 8 12 10 6 14 18 16 12 21 12" />
+    </svg>
   )
 }
 
-// ── Memory Constellation CTA card — real stats from /api/constellation.
-// Carries the Brain glyph (Constellation is Nyx's actual memory/"brain"
-// feature) — the Task Queue card below gets its own distinct icon instead.
-function ConstellationCard({ onNavigate, glowEnabled, particlesEnabled }) {
-  const [stats, setStats] = useState(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = () => getConstellation().then(r => { if (!cancelled) setStats(r.stats || null) }).catch(() => {})
-    load()
-    const id = setInterval(load, 15000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
-
-  const total = stats ? (stats.total_memories ?? 0) : null
-
+// Same path data as the sidebar's 'plug' icon.
+function PlugGlyph({ size = 16, color = 'currentColor' }) {
   return (
-    <SideCTACard
-      icon={<BrainGlyph size={22} color="#fff" />}
-      title="Memory Constellation"
-      statValue={total === null ? '—' : total}
-      statLabel={total === null ? 'LOADING' : total === 0 ? 'NO MEMORIES YET' : `REAL MEMOR${total === 1 ? 'Y' : 'IES'}`}
-      statusColor={total > 0 ? '#22c55e' : 'var(--color-text-disabled)'}
-      statusText={total > 0 ? 'LIVE' : 'EMPTY'}
-      ctaText="OPEN CONSTELLATION →"
-      onClick={() => onNavigate?.('memory')}
-      glowEnabled={glowEnabled}
-      particlesEnabled={particlesEnabled}
-    />
+    <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}>
+      <path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 01-12 0V8zM12 17v5" />
+    </svg>
   )
 }
 
-// ── Task Queue CTA card — real counts from /api/tasks (task_store.py).
-// This is the agent plugin's missing entry point into real, self-directed
-// tasks — no fabricated queue, no invented task rows.
-function TasksCard({ onNavigate, glowEnabled, particlesEnabled }) {
-  const [tasks, setTasks] = useState(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = () => getTasks().then(r => { if (!cancelled) setTasks(r.tasks || []) }).catch(() => {})
-    load()
-    const id = setInterval(load, 15000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
-
-  const counts = (tasks || []).reduce((acc, t) => {
-    const key = (t.status || '').toLowerCase()
-    acc[key] = (acc[key] || 0) + 1
-    return acc
-  }, {})
-  const running = counts.running || 0
-  const queued  = counts.queued || 0
-  const total   = (tasks || []).length
-
-  return (
-    <SideCTACard
-      icon={<ChecklistGlyph size={22} color="#fff" />}
-      title="Agent Task Queue"
-      statValue={tasks === null ? '—' : total}
-      statLabel={tasks === null ? 'LOADING' : total === 0 ? 'NO TASKS YET' : 'TOTAL TASKS'}
-      statusColor={running > 0 ? '#38bdf8' : '#22c55e'}
-      statusText={running > 0 ? `${running} RUNNING` : queued > 0 ? `${queued} QUEUED` : 'IDLE'}
-      ctaText="OPEN TASKS →"
-      onClick={() => onNavigate?.('tasks')}
-      glowEnabled={glowEnabled}
-      particlesEnabled={particlesEnabled}
-    />
-  )
-}
-
-// ── Top stat box — matches the reference's boxed stat readouts. Every
-// value passed in is real (agent count, live status counts), never invented.
-function StatBox({ label, value, color, dot }) {
+// ═══════════════════════════════════════════════════════
+// Top command strip — real values only. Each chip: label, strong value,
+// real status dot, subtle icon.
+// ═══════════════════════════════════════════════════════
+function StatusChip({ icon, label, value, color, dotColor }) {
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
-      background: 'rgba(4,5,18,0.7)', border: '1px solid rgba(var(--color-primary-rgb), 0.18)',
-      borderRadius: 10,
+      display: 'flex', alignItems: 'center', gap: 9, padding: '9px 15px', height: 44, boxSizing: 'border-box',
+      background: 'rgba(4,5,18,0.72)', border: '1px solid rgba(var(--color-primary-rgb), 0.18)',
+      borderRadius: 10, borderTop: '1px solid rgba(255,255,255,0.07)',
     }}>
+      <span style={{ color: color || 'var(--color-text-muted)', opacity: 0.85, display: 'flex' }}>{icon}</span>
       <div>
-        <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', letterSpacing: '0.14em' }}>{label}</div>
-        <div style={{ ...RAJ, fontSize: 16, fontWeight: 700, color: color || 'var(--color-text)' }}>{value}</div>
+        <div style={{ ...MONO, fontSize: 7.5, color: 'var(--color-text-disabled)', letterSpacing: '0.16em' }}>{label}</div>
+        <div style={{ ...RAJ, fontSize: 15, fontWeight: 700, color: color || 'var(--color-text)', lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {value}
+          {dotColor && <span style={{ width: 5, height: 5, borderRadius: '50%', background: dotColor, boxShadow: `0 0 5px ${dotColor}` }} />}
+        </div>
       </div>
-      {dot && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}` }} />}
     </div>
   )
 }
@@ -239,18 +171,20 @@ function ringDots(size, count, colorful) {
   })
 }
 
-// ── Central Nyx core — ambient glow wash + layered rings scattered with
-// small nodes + a faceted gem, matching the reference image's core ──
-function CoreNode({ particlesEnabled, glowEnabled }) {
+// ═══════════════════════════════════════════════════════
+// Central NYX core — layered rings (independent speeds), radial ports
+// facing each real agent, faceted core, readable state label.
+// ═══════════════════════════════════════════════════════
+function WorkforceCore({ particlesEnabled, glowEnabled, activeCount, totalCount, ports }) {
   const RINGS = [
-    { size: 240, dots: 12 },
-    { size: 192, dots: 9 },
-    { size: 146, dots: 7 },
-    { size: 100, dots: 0 },
+    { size: 240, dots: 12, speed: 26 },
+    { size: 192, dots: 9,  speed: -38 },
+    { size: 146, dots: 7,  speed: 50 },
+    { size: 100, dots: 0,  speed: -64 },
   ]
+  const allOnline = totalCount > 0 && activeCount === totalCount
   return (
     <div style={{ position: 'absolute', left: '50%', top: '50%', width: 0, height: 0 }}>
-      {/* ambient radial wash behind the whole core, like the reference's glow */}
       {glowEnabled && (
         <div style={{
           position: 'absolute', width: 480, height: 480, marginLeft: -240, marginTop: -240,
@@ -259,11 +193,11 @@ function CoreNode({ particlesEnabled, glowEnabled }) {
         }} />
       )}
 
-      {RINGS.map(({ size, dots }, i) => (
+      {RINGS.map(({ size, dots, speed }, i) => (
         <motion.div
           key={size}
-          animate={particlesEnabled ? { rotate: i % 2 === 0 ? 360 : -360 } : {}}
-          transition={particlesEnabled ? { duration: 26 + i * 12, repeat: Infinity, ease: 'linear' } : {}}
+          animate={particlesEnabled ? { rotate: speed > 0 ? 360 : -360 } : {}}
+          transition={particlesEnabled ? { duration: Math.abs(speed), repeat: Infinity, ease: 'linear' } : {}}
           style={{
             position: 'absolute', width: size, height: size,
             marginLeft: -size / 2, marginTop: -size / 2, borderRadius: '50%',
@@ -282,7 +216,19 @@ function CoreNode({ particlesEnabled, glowEnabled }) {
         </motion.div>
       ))}
 
-      {/* faceted gem — layered rotated squares forming a crystal look */}
+      {/* Connection ports — one per real agent, facing its actual direction */}
+      {ports.map(p => (
+        <div key={p.id} style={{
+          position: 'absolute', width: 8, height: 8, borderRadius: 2,
+          marginLeft: -4, marginTop: -4, transform: `rotate(45deg)`,
+          left: 122 * Math.cos(p.angle), top: 122 * Math.sin(p.angle),
+          background: p.hot ? p.color : 'rgba(255,255,255,0.25)',
+          boxShadow: glowEnabled && p.hot ? `0 0 8px ${p.color}` : 'none',
+          transition: 'background 0.2s, box-shadow 0.2s',
+        }} />
+      ))}
+
+      {/* Faceted core gem */}
       <motion.div
         animate={particlesEnabled ? { scale: [1, 1.08, 1] } : {}}
         transition={particlesEnabled ? { duration: 3.2, repeat: Infinity, ease: 'easeInOut' } : {}}
@@ -308,42 +254,73 @@ function CoreNode({ particlesEnabled, glowEnabled }) {
           boxShadow: glowEnabled ? '0 0 24px rgba(255,255,255,0.95)' : 'none',
         }} />
       </motion.div>
+
+      {/* Readable state label */}
+      <div style={{
+        position: 'absolute', left: 0, top: 118, transform: 'translateX(-50%)', textAlign: 'center', width: 160,
+      }}>
+        <div style={{ ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.18em' }}>NYX CORE</div>
+        <div style={{ ...MONO, fontSize: 8, color: allOnline ? '#22c55e' : 'var(--color-text-disabled)', letterSpacing: '0.1em', marginTop: 2 }}>
+          {totalCount === 0 ? 'NO WORKERS' : `${activeCount}/${totalCount} ONLINE`}
+        </div>
+      </div>
     </div>
   )
 }
 
-// ── One worker node/card — circular per-agent-colored badge + status
-// bar (bar fill reflects real state; the number was deliberately dropped
-// per your call — no invented precision score) ──
-function WorkerNode({ worker, x, y, onOpen, glowEnabled }) {
+// ═══════════════════════════════════════════════════════
+// Agent module card — real info: icon w/ activity ring, name, role,
+// purpose, status, provider, key state, configure action.
+// ═══════════════════════════════════════════════════════
+function AgentModuleCard({ worker, x, y, onOpen, onHover, hoveredId, glowEnabled, particlesEnabled }) {
   const meta = statusMeta(worker.status)
   const badgeColor = AGENT_COLOR[worker.id] || 'var(--color-primary)'
-  const barFill = worker.status === 'active' ? 100 : worker.status === 'processing' ? 55 : 8
+  const isActive = worker.status === 'active' || worker.status === 'processing'
+  const keyState = keyStateOf(worker)
+  const dimmed = hoveredId && hoveredId !== worker.id
+
   return (
     <div
       onClick={() => onOpen(worker.id)}
+      onMouseEnter={() => onHover(worker.id)}
+      onMouseLeave={() => onHover(null)}
       style={{
         position: 'absolute', left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)',
-        width: 196, cursor: 'pointer',
-        background: 'rgba(6,7,20,0.9)', border: `1px solid ${badgeColor}55`,
-        borderRadius: 14, padding: '13px 15px 12px',
-        boxShadow: glowEnabled ? `0 0 20px ${badgeColor}1c, inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
+        width: 188, cursor: 'pointer', boxSizing: 'border-box',
+        background: 'linear-gradient(180deg, rgba(14,15,32,0.92), rgba(6,7,20,0.92))',
+        border: `1px solid ${dimmed ? 'rgba(var(--color-primary-rgb),0.14)' : badgeColor + '66'}`,
+        borderTop: '1px solid rgba(255,255,255,0.09)',
+        borderRadius: 13, padding: '12px 14px 11px',
+        boxShadow: glowEnabled ? `0 0 ${dimmed ? 10 : 20}px ${badgeColor}${dimmed ? '0d' : '22'}, 0 6px 18px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05)` : 'none',
         backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-        transition: 'transform 0.15s, border-color 0.15s',
+        opacity: dimmed ? 0.55 : 1,
+        transition: 'transform 0.15s, border-color 0.2s, box-shadow 0.2s, opacity 0.2s',
       }}
-      onMouseEnter={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1.035)'}
-      onMouseLeave={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1)'}
+      onMouseDown={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(0.985)'}
+      onMouseUp={e => e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1.03)'}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 9 }}>
-        <div style={{
-          width: 44, height: 44, borderRadius: '50%', flexShrink: 0,
-          background: `radial-gradient(circle at 35% 30%, ${badgeColor}, ${badgeColor}66 70%)`,
-          boxShadow: glowEnabled ? `0 0 16px ${badgeColor}77` : 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 19, color: '#fff',
-        }}>{AGENT_GLYPH[worker.id] || '○'}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ position: 'relative', width: 40, height: 40, flexShrink: 0 }}>
+          {isActive && (
+            <motion.div
+              animate={particlesEnabled ? { rotate: 360 } : {}}
+              transition={particlesEnabled ? { duration: 6, repeat: Infinity, ease: 'linear' } : {}}
+              style={{
+                position: 'absolute', inset: -3, borderRadius: '50%',
+                border: `1.5px solid transparent`, borderTopColor: badgeColor, borderRightColor: `${badgeColor}55`,
+              }}
+            />
+          )}
+          <div style={{
+            position: 'absolute', inset: 0, borderRadius: '50%',
+            background: `radial-gradient(circle at 35% 30%, ${badgeColor}, ${badgeColor}66 70%)`,
+            boxShadow: glowEnabled ? `0 0 14px ${badgeColor}77` : 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 17, color: '#fff',
+          }}>{AGENT_GLYPH[worker.id] || '○'}</div>
+        </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ ...RAJ, fontSize: 14.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--color-text)' }}>
+          <div style={{ ...RAJ, fontSize: 14.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--color-text)' }}>
             {worker.name}
           </div>
           <div style={{ ...MONO, fontSize: 8.5, color: badgeColor, letterSpacing: '0.05em', marginTop: 1 }}>{worker.engine_kind}</div>
@@ -351,60 +328,70 @@ function WorkerNode({ worker, x, y, onOpen, glowEnabled }) {
       </div>
 
       <div style={{
-        ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', lineHeight: 1.5,
-        marginBottom: 10, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        ...RAJ, fontSize: 10.5, color: 'var(--color-text-secondary)', lineHeight: 1.45,
+        marginBottom: 9, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
       }}>
         {worker.purpose}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 7 }}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color, boxShadow: glowEnabled ? `0 0 6px ${meta.color}` : 'none' }} />
-        <span style={{ ...MONO, fontSize: 8.5, color: meta.color, letterSpacing: '0.06em' }}>{meta.label.toUpperCase()}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color, boxShadow: glowEnabled ? `0 0 6px ${meta.color}` : 'none' }} />
+          <span style={{ ...MONO, fontSize: 8.5, color: meta.color, letterSpacing: '0.05em' }}>{meta.label.toUpperCase()}</span>
+        </div>
+        <span style={{ ...MONO, fontSize: 7, color: keyState.color, letterSpacing: '0.04em' }}>{keyState.label}</span>
       </div>
 
-      {/* Status bar — fill reflects real live state, no invented number */}
-      <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', marginBottom: 8 }}>
-        <motion.div
-          animate={{ width: `${barFill}%` }}
-          transition={{ duration: 0.6 }}
-          style={{ height: '100%', background: badgeColor, boxShadow: glowEnabled ? `0 0 6px ${badgeColor}` : 'none' }}
-        />
-      </div>
+      <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', marginBottom: 8 }}>via {providerLabel(worker)}</div>
 
-      <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)' }}>via {providerLabel(worker)}</div>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '5px 0',
+        borderRadius: 6, border: `1px solid ${badgeColor}33`, background: `${badgeColor}0d`,
+        ...MONO, fontSize: 7.5, fontWeight: 600, color: badgeColor, letterSpacing: '0.1em', textTransform: 'uppercase',
+      }}>
+        Configure
+      </div>
     </div>
   )
 }
 
-// ── SVG connectors — solid glowing bent path (core -> elbow -> card) per
-// agent's own identity color, with a traveling pulse when animations are
-// on, matching the reference's brighter, richer-colored links ──
-function Connectors({ positions, glowEnabled, particlesEnabled }) {
+// ═══════════════════════════════════════════════════════
+// Connection routing — core edge -> short straight run -> right-angle
+// bend with a junction point -> curved final approach into the card.
+// Reads as routed data infrastructure, not a single laser beam.
+// ═══════════════════════════════════════════════════════
+function AgentConnections({ positions, glowEnabled, particlesEnabled, hoveredId }) {
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
       <defs>
         <filter id="connectorGlow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="0.6" result="blur" />
-          <feMerge>
-            <feMergeNode in="blur" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
+          <feGaussianBlur stdDeviation="0.55" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
       {positions.map(({ id, x, y, color }) => {
-        const elbowX = 50 + (x - 50) * 0.5
-        const elbowY = 50 + (y - 50) * 0.62
-        const path = `M 50 50 L ${elbowX} ${elbowY} L ${x} ${y}`
+        const dx = x - 50, dy = y - 50
+        // First bend: short straight run out from the core along the
+        // dominant axis, then a right-angle turn.
+        const midX = 50 + dx * 0.42
+        const midY = 50 + dy * 0.72
+        // Second bend closer to the card, then a short curved approach.
+        const nearX = 50 + dx * 0.82
+        const nearY = 50 + dy * 0.90
+        const path = `M 50 50 L ${midX} ${midY} L ${nearX} ${nearY} Q ${x} ${nearY + (y - nearY) * 0.3} ${x} ${y}`
+        const isHot = !hoveredId || hoveredId === id
+        const opacity = (glowEnabled ? 0.75 : 0.4) * (isHot ? 1 : 0.28)
         return (
           <g key={id} filter={glowEnabled ? 'url(#connectorGlow)' : undefined}>
-            <path d={path} fill="none" stroke={color} strokeWidth="0.45" strokeOpacity={glowEnabled ? 0.75 : 0.4} strokeLinecap="round" />
-            {particlesEnabled && (
-              <circle r="0.7" fill="#fff" opacity={0.9}>
-                <animateMotion dur="2.2s" repeatCount="indefinite" path={path} />
+            <path d={path} fill="none" stroke={color} strokeWidth={isHot && hoveredId ? 0.65 : 0.42} strokeOpacity={opacity} strokeLinecap="round" />
+            {particlesEnabled && isHot && (
+              <circle r="0.65" fill="#fff" opacity={0.9}>
+                <animateMotion dur="2.4s" repeatCount="indefinite" path={path} />
               </circle>
             )}
-            <circle cx={elbowX} cy={elbowY} r="0.6" fill="#fff" opacity={glowEnabled ? 0.9 : 0.55} />
-            <circle cx={x} cy={y} r="0.55" fill={color} opacity={glowEnabled ? 0.95 : 0.6} />
+            <circle cx={midX} cy={midY} r="0.5" fill="#fff" opacity={(glowEnabled ? 0.7 : 0.4) * (isHot ? 1 : 0.3)} />
+            <circle cx={nearX} cy={nearY} r="0.5" fill="#fff" opacity={(glowEnabled ? 0.7 : 0.4) * (isHot ? 1 : 0.3)} />
+            <circle cx={x} cy={y} r="0.55" fill={color} opacity={(glowEnabled ? 0.95 : 0.6) * (isHot ? 1 : 0.35)} />
           </g>
         )
       })}
@@ -414,6 +401,7 @@ function Connectors({ positions, glowEnabled, particlesEnabled }) {
 
 // ═══════════════════════════════════════════════════════
 // Detail modal — provider config, key management, fallback order
+// (unchanged behavior — real API calls, no regressions)
 // ═══════════════════════════════════════════════════════
 function ProviderCard({ worker, provider, onChanged }) {
   const [keyInput, setKeyInput] = useState('')
@@ -622,6 +610,170 @@ function WorkerDetailModal({ workerId, onClose }) {
 }
 
 // ═══════════════════════════════════════════════════════
+// Right-hand operations column — compact, real-data panels.
+// ═══════════════════════════════════════════════════════
+
+function OpsPanel({ title, icon, action, children }) {
+  return (
+    <div style={{
+      background: 'rgba(6,7,20,0.85)', border: '1px solid rgba(var(--color-primary-rgb),0.16)',
+      borderTop: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 13px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: 'var(--color-primary)', opacity: 0.8, display: 'flex' }}>{icon}</span>
+          <span style={{ ...MONO, fontSize: 8, fontWeight: 600, letterSpacing: '0.16em', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>{title}</span>
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function EmptyRow({ text }) {
+  return <div style={{ ...MONO, fontSize: 9, color: 'var(--color-text-disabled)', padding: '4px 0' }}>{text}</div>
+}
+
+// WORKFORCE STATUS — 3-line real summary (agents online, ollama, queued)
+function WorkforceStatusPanel({ activeCount, totalCount, ollamaReachable, queuedCount }) {
+  const rows = [
+    { label: `${activeCount}/${totalCount} agents active`, ok: totalCount > 0 && activeCount === totalCount },
+    { label: ollamaReachable ? 'Ollama online' : 'Ollama offline', ok: ollamaReachable },
+    { label: `${queuedCount} queued task${queuedCount === 1 ? '' : 's'}`, ok: true },
+  ]
+  return (
+    <OpsPanel title="Workforce Status" icon={<ActivityGlyph size={13} />}>
+      {rows.map(r => (
+        <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '3px 0' }}>
+          <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.ok ? '#22c55e' : '#f87171', boxShadow: `0 0 5px ${r.ok ? '#22c55e' : '#f87171'}` }} />
+          <span style={{ ...RAJ, fontSize: 11.5, color: 'var(--color-text-secondary)' }}>{r.label}</span>
+        </div>
+      ))}
+    </OpsPanel>
+  )
+}
+
+// MEMORY LINK — compact real stats + open action
+function MemoryLinkPanel({ stats, categoryCount, onNavigate }) {
+  const total = stats?.total_memories ?? null
+  return (
+    <OpsPanel title="Memory Link" icon={<BrainGlyph size={13} />}>
+      {total === null ? (
+        <EmptyRow text="Loading..." />
+      ) : total === 0 ? (
+        <EmptyRow text="No memories yet." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 9 }}>
+          <StatRow label="Total memories" value={total} />
+          <StatRow label="Active categories" value={categoryCount ?? '—'} />
+          <StatRow label="Relationships" value={stats.total_edges ?? '—'} />
+          {stats.last_synced && <StatRow label="Last synced" value={relTime(stats.last_synced)} />}
+        </div>
+      )}
+      <button onClick={() => onNavigate?.('memory')} style={panelLinkStyle}>Open Constellation →</button>
+    </OpsPanel>
+  )
+}
+
+function StatRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+      <span style={{ ...RAJ, fontSize: 10.5, color: 'var(--color-text-muted)' }}>{label}</span>
+      <span style={{ ...MONO, fontSize: 10, color: 'var(--color-text)' }}>{value}</span>
+    </div>
+  )
+}
+
+const panelLinkStyle = {
+  ...MONO, fontSize: 8.5, color: 'var(--color-primary)', letterSpacing: '0.08em',
+  background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: 2,
+}
+
+// PROVIDER HEALTH — real per-agent active provider + key state
+function ProviderHealthPanel({ workers }) {
+  return (
+    <OpsPanel title="Provider Health" icon={<PlugGlyph size={13} />}>
+      {(workers || []).map(w => {
+        const keyState = keyStateOf(w)
+        const badgeColor = AGENT_COLOR[w.id] || 'var(--color-primary)'
+        return (
+          <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: badgeColor, flexShrink: 0 }} />
+              <span style={{ ...RAJ, fontSize: 10.5, color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {w.name} <span style={{ color: 'var(--color-text-disabled)' }}>· {providerLabel(w)}</span>
+              </span>
+            </div>
+            <span style={{ ...MONO, fontSize: 7.5, color: keyState.color, letterSpacing: '0.04em', flexShrink: 0, marginLeft: 6 }}>{keyState.label}</span>
+          </div>
+        )
+      })}
+      {(!workers || workers.length === 0) && <EmptyRow text="No agents registered." />}
+    </OpsPanel>
+  )
+}
+
+// TASK QUEUE — compact real list from task_store.py (/api/tasks)
+function TaskQueuePanel({ tasks, onNavigate }) {
+  const list = tasks || []
+  const visible = list.slice(0, 4)
+  return (
+    <OpsPanel
+      title="Task Queue" icon={<ChecklistGlyph size={13} />}
+      action={<span style={{ ...MONO, fontSize: 9, color: 'var(--color-text-disabled)' }}>{list.length}</span>}
+    >
+      {tasks === null ? (
+        <EmptyRow text="Loading..." />
+      ) : list.length === 0 ? (
+        <EmptyRow text="No tasks queued." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 9 }}>
+          {visible.map(t => {
+            const s = (t.status || '').toUpperCase()
+            const color = s === 'COMPLETE' ? '#22c55e' : s === 'FAILED' ? '#f87171' : s === 'IN PROGRESS' ? '#38bdf8' : '#facc15'
+            return (
+              <div key={t.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ ...RAJ, fontSize: 10.5, color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{t.name}</span>
+                <span style={{ ...MONO, fontSize: 7.5, color, letterSpacing: '0.04em', flexShrink: 0 }}>{s}</span>
+              </div>
+            )
+          })}
+          {list.length > 4 && <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)' }}>+{list.length - 4} more</div>}
+        </div>
+      )}
+      <button onClick={() => onNavigate?.('tasks')} style={panelLinkStyle}>Open Tasks →</button>
+    </OpsPanel>
+  )
+}
+
+// WORKFORCE ACTIVITY — real recent events, honest empty state
+function WorkforceActivityPanel({ events }) {
+  const list = (events || []).slice(0, 5)
+  return (
+    <OpsPanel title="Workforce Activity" icon={<ActivityGlyph size={13} />}>
+      {events === null ? (
+        <EmptyRow text="Loading..." />
+      ) : list.length === 0 ? (
+        <EmptyRow text="No activity recorded yet." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          {list.map(e => (
+            <div key={e.id}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: e.status === 'warning' ? '#facc15' : '#22c55e', flexShrink: 0 }} />
+                <span style={{ ...RAJ, fontSize: 10.5, color: 'var(--color-text-secondary)' }}>{e.title}</span>
+              </div>
+              <div style={{ ...MONO, fontSize: 8, color: 'var(--color-text-disabled)', marginLeft: 11 }}>{relTime(e.timestamp)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </OpsPanel>
+  )
+}
+
+// ═══════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════
 export default function AgentsPage({ onNavigate }) {
@@ -629,9 +781,15 @@ export default function AgentsPage({ onNavigate }) {
   const [workers, setWorkers] = useState(null)
   const [error, setError] = useState(null)
   const [openId, setOpenId] = useState(null)
-  const pollRef = useRef(null)
+  const [hoveredId, setHoveredId] = useState(null)
+  const [tasks, setTasks] = useState(null)
+  const [constellationStats, setConstellationStats] = useState(null)
+  const [categoryCounts, setCategoryCounts] = useState(null)
+  const [events, setEvents] = useState(null)
+  const workersPollRef = useRef(null)
+  const sidePollRef = useRef(null)
 
-  const load = useCallback(async () => {
+  const loadWorkers = useCallback(async () => {
     try {
       const { workers } = await getWorkers()
       setWorkers(workers)
@@ -641,57 +799,94 @@ export default function AgentsPage({ onNavigate }) {
     }
   }, [])
 
+  const loadSideData = useCallback(() => {
+    getTasks().then(r => setTasks(r.tasks || [])).catch(() => {})
+    getConstellation().then(r => setConstellationStats(r.stats || null)).catch(() => {})
+    getCategoryCounts().then(r => setCategoryCounts(Object.keys(r.counts || {}).length)).catch(() => {})
+    getEvents(8).then(r => setEvents(r.events || [])).catch(() => {})
+  }, [])
+
   useEffect(() => {
-    load()
-    pollRef.current = setInterval(load, POLL_MS)
-    return () => clearInterval(pollRef.current)
-  }, [load])
+    loadWorkers()
+    workersPollRef.current = setInterval(loadWorkers, WORKERS_POLL_MS)
+    return () => clearInterval(workersPollRef.current)
+  }, [loadWorkers])
+
+  useEffect(() => {
+    loadSideData()
+    sidePollRef.current = setInterval(loadSideData, SIDE_DATA_POLL_MS)
+    return () => clearInterval(sidePollRef.current)
+  }, [loadSideData])
 
   const glowEnabled = visualPrefs.glowEffectsEnabled
   const particlesEnabled = visualPrefs.particlesEnabled
 
-  // Radial layout — angle from top, clockwise, evenly spaced.
-  const positions = (workers || []).map((w, i) => {
+  // Radial layout — angle from top, clockwise, evenly spaced. Pulled in
+  // slightly from the previous rx/ry so cards keep clearance from the
+  // hub's top/bottom edge instead of running flush against it.
+  const positions = useMemo(() => (workers || []).map((w, i) => {
     const angle = (2 * Math.PI * i) / Math.max(1, (workers || []).length) - Math.PI / 2
-    const rx = 38, ry = 34
+    const rx = 36, ry = 31
     return {
       id: w.id,
+      angle,
       x: 50 + rx * Math.cos(angle),
       y: 50 + ry * Math.sin(angle),
       color: AGENT_COLOR[w.id] || 'var(--color-primary)',
     }
-  })
+  }), [workers])
 
   const activeCount = (workers || []).filter(w => w.status === 'active' || w.status === 'processing').length
   const unavailableCount = (workers || []).filter(w => w.status === 'unavailable' || w.status === 'missing_configuration').length
+  const ollamaReachable = (workers || []).some(w => w.ollama_reachable)
+  const queuedCount = (tasks || []).filter(t => (t.status || '').toUpperCase() === 'PENDING').length
+
+  const ports = positions.map(p => ({ ...p, hot: hoveredId === p.id }))
 
   return (
-    <div style={{ padding: '24px 28px', height: '100%', overflowY: 'auto', display: 'flex', gap: 22 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+    <div style={{ position: 'relative', height: '100%', overflow: 'hidden' }}>
+
+      {/* Mountain/skyline foreground (Background.jsx's global canvas, when
+          that bg style is selected) reduced to a subtle lower-edge fade
+          for this page only — real fix for the clipped Analyst card is
+          the flex-based hub sizing below, this just keeps the busy
+          skyline from visually crowding the bottom row. */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, bottom: 0, height: 170, zIndex: 0, pointerEvents: 'none',
+        background: 'linear-gradient(to bottom, rgba(var(--color-bg-rgb),0), rgba(var(--color-bg-rgb),0.55) 55%, rgba(var(--color-bg-rgb),0.85) 100%)',
+      }} />
+
+      <div style={{
+        position: 'relative', zIndex: 1, height: '100%', display: 'flex', flexDirection: 'column',
+        padding: '22px 26px', boxSizing: 'border-box', overflow: 'hidden',
+      }}>
+        {/* ── Header + unified status rail ── */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12, flexShrink: 0 }}>
           <div>
-            <div style={{ ...RAJ, fontSize: 22, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--color-text)' }}>AI Workforce</div>
-            <div style={{ ...MONO, fontSize: 9.5, color: 'var(--color-text-disabled)', marginTop: 2 }}>
-              Nyx's real specialized workers — click a node to configure its providers.
+            <div style={{ ...RAJ, fontSize: 23, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--color-text)' }}>AI Workforce</div>
+            <div style={{ ...RAJ, fontSize: 12, color: 'var(--color-text-muted)', marginTop: 3 }}>
+              Four specialized systems operating through the NYX Core.
             </div>
           </div>
           {workers && (
-            <div style={{ display: 'flex', gap: 10 }}>
-              <StatBox label="AGENTS" value={workers.length} color="var(--color-accent)" />
-              <StatBox label="ACTIVE" value={activeCount} color="#22c55e" dot />
-              {unavailableCount > 0 && <StatBox label="UNAVAILABLE" value={unavailableCount} color="#f87171" dot />}
-              <StatBox
-                label="OLLAMA"
-                value={workers.some(w => w.ollama_reachable) ? 'Reachable' : 'Unreachable'}
-                color={workers.some(w => w.ollama_reachable) ? '#22c55e' : '#f87171'}
-                dot
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <StatusChip icon={<PlugGlyph size={14} />} label="AGENTS" value={workers.length} />
+              <StatusChip icon={<ActivityGlyph size={14} />} label="ACTIVE" value={activeCount} color="#22c55e" dotColor="#22c55e" />
+              {unavailableCount > 0 && (
+                <StatusChip icon={<ActivityGlyph size={14} />} label="UNAVAILABLE" value={unavailableCount} color="#f87171" dotColor="#f87171" />
+              )}
+              <StatusChip
+                icon={<BrainGlyph size={14} />} label="OLLAMA"
+                value={ollamaReachable ? 'Reachable' : 'Unreachable'}
+                color={ollamaReachable ? '#22c55e' : '#f87171'} dotColor={ollamaReachable ? '#22c55e' : '#f87171'}
               />
+              <StatusChip icon={<ChecklistGlyph size={14} />} label="QUEUED TASKS" value={queuedCount} />
             </div>
           )}
         </div>
 
         {error && (
-          <div style={{ ...MONO, fontSize: 11, color: '#f87171', padding: '10px 14px', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, marginBottom: 16 }}>
+          <div style={{ ...MONO, fontSize: 11, color: '#f87171', padding: '10px 14px', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, marginBottom: 16, flexShrink: 0 }}>
             Could not reach Nyx backend: {error}
           </div>
         )}
@@ -704,26 +899,48 @@ export default function AgentsPage({ onNavigate }) {
           <div style={{ ...MONO, fontSize: 11, color: 'var(--color-text-disabled)' }}>No agents registered.</div>
         )}
 
+        {/* ── Middle zone: central network (flex) + operations column (fixed) ── */}
         {workers && workers.length > 0 && (
-          <div style={{ position: 'relative', width: '100%', height: 620, minWidth: 700 }}>
-            <Connectors positions={positions} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
-            <CoreNode particlesEnabled={particlesEnabled} glowEnabled={glowEnabled} />
-            <div style={{
-              position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, 105px)',
-              ...MONO, fontSize: 8.5, color: 'var(--color-text-disabled)', letterSpacing: '0.14em',
-            }}>NYX CORE</div>
-            {workers.map((w, i) => (
-              <WorkerNode key={w.id} worker={w} x={positions[i].x} y={positions[i].y} onOpen={setOpenId} glowEnabled={glowEnabled} />
-            ))}
+          <div style={{ display: 'flex', gap: 18, flex: 1, minHeight: 0 }}>
+
+            {/* Central workforce network — sized to fill remaining vertical
+                space (not a fixed pixel height), so it can never push the
+                bottom agent card past the viewport regardless of window
+                size or display scaling. */}
+            <div
+              onMouseLeave={() => setHoveredId(null)}
+              style={{
+                position: 'relative', flex: 1, minWidth: 420, minHeight: 420,
+                borderRadius: 16, overflow: 'hidden',
+                border: '1px solid rgba(var(--color-primary-rgb),0.10)',
+                background: `
+                  radial-gradient(circle at 50% 50%, rgba(var(--color-primary-rgb),0.05), transparent 60%),
+                  repeating-linear-gradient(0deg, rgba(var(--color-primary-rgb),0.035) 0px, rgba(var(--color-primary-rgb),0.035) 1px, transparent 1px, transparent 34px),
+                  repeating-linear-gradient(90deg, rgba(var(--color-primary-rgb),0.035) 0px, rgba(var(--color-primary-rgb),0.035) 1px, transparent 1px, transparent 34px)
+                `,
+              }}
+            >
+              <AgentConnections positions={positions} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} hoveredId={hoveredId} />
+              <WorkforceCore particlesEnabled={particlesEnabled} glowEnabled={glowEnabled} activeCount={activeCount} totalCount={workers.length} ports={ports} />
+              {workers.map((w, i) => (
+                <AgentModuleCard
+                  key={w.id} worker={w} x={positions[i].x} y={positions[i].y}
+                  onOpen={setOpenId} onHover={setHoveredId} hoveredId={hoveredId}
+                  glowEnabled={glowEnabled} particlesEnabled={particlesEnabled}
+                />
+              ))}
+            </div>
+
+            {/* Operations column */}
+            <div style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', paddingRight: 2 }}>
+              <WorkforceStatusPanel activeCount={activeCount} totalCount={workers.length} ollamaReachable={ollamaReachable} queuedCount={queuedCount} />
+              <MemoryLinkPanel stats={constellationStats} categoryCount={categoryCounts} onNavigate={onNavigate} />
+              <ProviderHealthPanel workers={workers} />
+              <TaskQueuePanel tasks={tasks} onNavigate={onNavigate} />
+              <WorkforceActivityPanel events={events} />
+            </div>
           </div>
         )}
-      </div>
-
-      {/* Right-hand vertical CTA column — Constellation ("the brain") above
-          the Task Queue card, same narrow width, both real-data-driven. */}
-      <div style={{ width: 200, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 2 }}>
-        <ConstellationCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
-        <TasksCard onNavigate={onNavigate} glowEnabled={glowEnabled} particlesEnabled={particlesEnabled} />
       </div>
 
       <AnimatePresence>
