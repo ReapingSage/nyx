@@ -15,18 +15,28 @@ log = get_logger(__name__)
 DB_PATH = Path(__file__).parent.parent / "memory" / "constellation.json"
 
 VALID_CATEGORIES = {
-    'identity', 'projects', 'skills', 'systems',
-    'preferences', 'events', 'relationships', 'vault',
+    'projects', 'technology', 'people', 'hardware', 'software', 'ai_models',
+    'servers_network', 'research', 'ideas', 'goals', 'decisions', 'tasks',
+    'events', 'preferences', 'personal_knowledge', 'documents', 'uncategorized',
 }
 
-# Map old category names → new ones (migration for existing data)
+# Map every category name this field has ever held → the current 17-category
+# taxonomy (core/category_manager.py owns the taxonomy itself; this map just
+# keeps the legacy single `category` field on old nodes in sync with it).
 _OLD_CAT_MAP = {
-    'goals':       'identity',
-    'interests':   'preferences',
-    'values':      'identity',
-    'experiences': 'events',
-    'personal':    'identity',
-    'knowledge':   'vault',
+    # Pre-8-category names
+    'interests':     'preferences',
+    'values':        'personal_knowledge',
+    'experiences':   'events',
+    'personal':      'personal_knowledge',
+    'knowledge':     'documents',
+    # Previous 8-category taxonomy → new 17 (confirmed mapping)
+    'identity':      'personal_knowledge',
+    'skills':        'technology',
+    'systems':       'servers_network',
+    'relationships': 'people',
+    'vault':         'personal_knowledge',
+    # 'projects', 'preferences', 'events' are unchanged names, no entry needed
 }
 
 
@@ -133,7 +143,7 @@ class ConstellationManager:
         category = category.lower()
         category = _OLD_CAT_MAP.get(category, category)   # migrate old names on the fly
         if category not in VALID_CATEGORIES:
-            category = 'vault'
+            category = 'uncategorized'
 
         existing = self.find_by_label(label, category)
         if existing:

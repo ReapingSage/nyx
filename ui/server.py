@@ -88,6 +88,14 @@ async def _start_background_loops():
     from tools.system import music_control
     music_control.register(_music_broadcast, lambda: len(voice_ws.clients) > 0)
 
+    # One-time category taxonomy migration (old 8 categories -> new 17).
+    # Idempotent — safe to run on every startup, only touches assignments
+    # still on the old scheme.
+    from core import category_manager
+    migration_result = await loop.run_in_executor(None, category_manager.migrate_legacy_categories)
+    if migration_result["migrated_assignments"]:
+        log.info(f"[categories] Migrated {migration_result['migrated_assignments']} legacy category assignments to new taxonomy.")
+
     async def reminder_loop():
         from tools.system.notifications import notify
         while True:
@@ -586,6 +594,22 @@ class ManualCategoryRequest(BaseModel):
     add: bool = True
 
 
+class SetPrimaryCategoryRequest(BaseModel):
+    category_id: str
+
+
+class CategoryColorRequest(BaseModel):
+    color: str
+
+
+class RenameCategoryRequest(BaseModel):
+    name: str
+
+
+class MergeCategoryRequest(BaseModel):
+    into_id: str
+
+
 class EdgeConfirmRequest(BaseModel):
     confirmed: bool
 
@@ -613,14 +637,102 @@ async def get_all_node_categories():
 
 @app.post("/api/constellation/nodes/{node_id}/categories")
 async def set_node_category(node_id: str, req: ManualCategoryRequest):
+    """add=True adds/promotes req.category_id as a secondary label;
+    add=False removes it. Use the dedicated /primary route to change which
+    category controls the node's color."""
     from core import category_manager
     if not constellation.find_by_id(node_id):
         raise HTTPException(status_code=404, detail="Node not found")
     try:
-        cats = category_manager.set_manual_category(node_id, req.category_id, req.add)
+        if req.add:
+            cats = category_manager.add_secondary_category(node_id, req.category_id)
+        else:
+            cats = category_manager.remove_category(node_id, req.category_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/primary")
+async def set_node_primary_category(node_id: str, req: SetPrimaryCategoryRequest):
+    """Explicit manual primary — never overwritten by a later automatic
+    categorization pass."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    try:
+        cats = category_manager.set_primary_category(node_id, req.category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/{category_id}/confirm")
+async def confirm_node_category(node_id: str, category_id: str):
+    """User confirms an automatic suggestion — converts it to manual."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    cats = category_manager.confirm_category(node_id, category_id)
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/{category_id}/reject")
+async def reject_node_category(node_id: str, category_id: str):
+    """User rejects an automatic suggestion — removed outright."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    cats = category_manager.reject_category(node_id, category_id)
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.get("/api/constellation/category-counts")
+async def get_category_counts():
+    """Real per-category node counts — drives which category regions the
+    3D scene actually renders (only categories with >=1 real node)."""
+    from core import category_manager
+    return {"counts": category_manager.category_counts()}
+
+
+@app.post("/api/constellation/categories/{category_id}/rename")
+async def rename_category_route(category_id: str, req: RenameCategoryRequest):
+    from core import category_manager
+    try:
+        cat = category_manager.rename_category(category_id, req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/color")
+async def set_category_color_route(category_id: str, req: CategoryColorRequest):
+    from core import category_manager
+    try:
+        cat = category_manager.set_category_color(category_id, req.color)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/color/restore")
+async def restore_category_color_route(category_id: str):
+    from core import category_manager
+    try:
+        cat = category_manager.restore_category_color(category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/merge")
+async def merge_category_route(category_id: str, req: MergeCategoryRequest):
+    from core import category_manager
+    try:
+        result = category_manager.merge_categories(category_id, req.into_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 @app.post("/api/constellation/categorize")

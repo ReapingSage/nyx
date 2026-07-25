@@ -136,6 +136,76 @@ export async function discoverRelationships() {
   return res.json()
 }
 
+export async function setPrimaryCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/primary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function confirmNodeCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/${categoryId}/confirm`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function rejectNodeCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/${categoryId}/reject`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getCategoryCounts() {
+  const res = await fetch(`${API_URL}/api/constellation/category-counts`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { counts: { [categoryId]: number } }
+}
+
+export async function renameCategory(categoryId, name) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setCategoryColor(categoryId, color) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/color`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function restoreCategoryColor(categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/color/restore`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function mergeCategory(categoryId, intoId) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ into_id: intoId }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function confirmEdge(edgeId, confirmed) {
   const res = await fetch(`${API_URL}/api/constellation/edges/${edgeId}/confirm`, {
     method: 'POST',

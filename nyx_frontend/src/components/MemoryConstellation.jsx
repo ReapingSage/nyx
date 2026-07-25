@@ -21,21 +21,22 @@ import {
   getConstellation, addMemory, deleteMemory, updateMemory,
   syncConstellation, exportConstellation, openVault, searchConstellation,
   getCategories, getAllNodeCategories, categorizeAll, discoverRelationships,
+  getCategoryCounts, setPrimaryCategory, confirmNodeCategory, rejectNodeCategory,
 } from '../services/api.js'
 import Constellation3D from './Constellation3D.jsx'
+import { categoryColorCss } from '../utils/categoryPalette.js'
 
-// ── Category config (visual only — colors/icons for the legacy `category`
-// field and UI chips; real multi-label assignments come from the backend
-// category_manager and are shown separately) ──────────────────────────
-const CAT = {
-  identity:      { label: 'IDENTITY',      icon: '◉', color: '#C77DFF' },
-  projects:      { label: 'PROJECTS',      icon: '⟨/⟩', color: '#5B8FFF' },
-  skills:        { label: 'SKILLS',        icon: '⚡', color: '#4DC8FF' },
-  systems:       { label: 'SYSTEMS',       icon: '◈', color: '#7B60FF' },
-  preferences:   { label: 'PREFERENCES',   icon: '◆', color: '#A855F7' },
-  events:        { label: 'EVENTS',        icon: '★', color: '#FF9555' },
-  relationships: { label: 'RELATIONSHIPS', icon: '♥', color: '#FF7BA5' },
-  vault:         { label: 'VAULT NOTES',   icon: '◫', color: '#7BAFFF' },
+// Real taxonomy comes from the backend (core/category_manager.py) — these
+// helpers just look up name/color for a category id against whatever the
+// server returned, falling back to categoryPalette's curated default (or
+// the raw id) if the taxonomy hasn't loaded yet.
+function catColor(categories, id) {
+  const meta = categories.find(c => c.id === id)
+  return categoryColorCss(id, meta?.custom_color || null)
+}
+function catName(categories, id) {
+  const meta = categories.find(c => c.id === id)
+  return meta?.name || id || 'Uncategorized'
 }
 
 function hexA(hex, a) {
@@ -64,6 +65,8 @@ export default function MemoryConstellation() {
   const [apiData,        setApiData]        = useState({ nodes: [], edges: [], stats: {} })
   const [stats,          setStats]          = useState({ total_memories: 0, total_edges: 0, categories: 0, last_synced: null })
   const [categories,     setCategories]     = useState([])
+  const [categoryCounts, setCategoryCounts] = useState({})
+  const [activeCategoryId, setActiveCategoryId] = useState(null)
   const [nodeCategoryMap,setNodeCategoryMap]= useState({})
   const [hoveredNode,    setHoveredNode]    = useState(null)
   const [selectedNode,   setSelectedNode]   = useState(null)
@@ -119,17 +122,40 @@ export default function MemoryConstellation() {
 
   const loadData = useCallback(async (silent = false) => {
     try {
-      const [data, catData, assignData] = await Promise.all([
-        getConstellation(), getCategories(), getAllNodeCategories(),
+      const [data, catData, assignData, countData] = await Promise.all([
+        getConstellation(), getCategories(), getAllNodeCategories(), getCategoryCounts(),
       ])
       setApiData(data)
       setStats(data.stats || {})
       setCategories(catData.categories || [])
       setNodeCategoryMap(assignData.assignments || {})
+      setCategoryCounts(countData.counts || {})
     } catch {
       if (!silent) notify('NYX server offline — constellation shown from local state', 'error')
     }
   }, [notify])
+
+  // ── Category management actions — real backend calls, reload after ──
+  const handleSetPrimaryCategory = useCallback(async (nodeId, categoryId) => {
+    try { await setPrimaryCategory(nodeId, categoryId); await loadData(true); notify('Primary category updated') }
+    catch { notify('Could not update primary category', 'error') }
+  }, [loadData, notify])
+
+  const handleConfirmCategory = useCallback(async (nodeId, categoryId) => {
+    try { await confirmNodeCategory(nodeId, categoryId); await loadData(true) }
+    catch { notify('Could not confirm category', 'error') }
+  }, [loadData, notify])
+
+  const handleRejectCategory = useCallback(async (nodeId, categoryId) => {
+    try { await rejectNodeCategory(nodeId, categoryId); await loadData(true) }
+    catch { notify('Could not reject category', 'error') }
+  }, [loadData, notify])
+
+  const handleFocusCategory = useCallback((categoryId) => {
+    setSelectedNode(null)
+    setActiveCategoryId(prev => prev === categoryId ? null : categoryId)
+    scene3DRef.current?.focusCategory(categoryId)
+  }, [])
 
   useEffect(() => { loadData(true) }, [loadData])
 
@@ -209,7 +235,7 @@ export default function MemoryConstellation() {
 
   const selectNodeById = useCallback((nodeId) => {
     const node = (apiData.nodes || []).find(n => n.id === nodeId)
-    if (node) { setSelectedNode(node); scene3DRef.current?.focusNode(nodeId) }
+    if (node) { setSelectedNode(node); setActiveCategoryId(null); scene3DRef.current?.focusNode(nodeId) }
   }, [apiData.nodes])
 
   const handleOpenVault = useCallback(async () => {
@@ -233,7 +259,7 @@ export default function MemoryConstellation() {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
 
         <AnimatePresence>
-          {showFilters && <FiltersPanel filters={filters} setFilters={setFilters} onClose={() => setShowFilters(false)} />}
+          {showFilters && <FiltersPanel categories={categories} filters={filters} setFilters={setFilters} onClose={() => setShowFilters(false)} />}
         </AnimatePresence>
 
         {/* 3D scene area */}
@@ -243,12 +269,15 @@ export default function MemoryConstellation() {
             nodes={filteredNodes}
             edges={apiData.edges || []}
             nodeCategoryMap={nodeCategoryMap}
+            categories={categories}
+            categoryCounts={categoryCounts}
+            activeCategoryId={activeCategoryId}
             selectedNodeId={selectedNode?.id || null}
             hoveredNodeId={hoveredNode?.id || null}
             searchMatchIds={searchMatchIds}
             searchActive={searchActive}
             visualPrefs={visualPrefs}
-            onSelectNode={(node) => { setSelectedNode(node); setContextMenu(null) }}
+            onSelectNode={(node) => { setSelectedNode(node); setActiveCategoryId(null); setContextMenu(null) }}
             onHoverNode={setHoveredNode}
           />
 
@@ -257,6 +286,11 @@ export default function MemoryConstellation() {
             searching={searching} results={searchResults} error={searchError}
             onSelectResult={(r) => { if (r.source_type === 'constellation') selectNodeById(r.source_id) }}
             onClear={() => { setSearchQuery(''); setSearchResults(null); setSearchError(null) }}
+          />
+
+          <CategoryLegend
+            categories={categories} categoryCounts={categoryCounts}
+            activeCategoryId={activeCategoryId} onFocusCategory={handleFocusCategory}
           />
 
           {searchActive && (
@@ -300,20 +334,26 @@ export default function MemoryConstellation() {
         </div>
 
         <RightSidebar
-          stats={stats} categories={categories} nodeCategoryMap={nodeCategoryMap}
+          stats={stats} categories={categories} categoryCounts={categoryCounts} nodeCategoryMap={nodeCategoryMap}
           selectedNode={selectedNode} apiData={apiData}
           syncing={syncing} syncResult={syncResult} onSync={handleSync}
           categorizing={categorizing} onCategorize={handleCategorize}
           discovering={discovering} onDiscoverRelationships={handleDiscoverRelationships}
           onExportJSON={handleExportJSON} onOpenVault={handleOpenVault}
-          onFocusNode={(id) => scene3DRef.current?.focusNode(id)}
+          onFocusNode={(id) => { setActiveCategoryId(null); scene3DRef.current?.focusNode(id) }}
           notify={notify}
+          onSetPrimaryCategory={handleSetPrimaryCategory}
+          onConfirmCategory={handleConfirmCategory}
+          onRejectCategory={handleRejectCategory}
+          activeCategoryId={activeCategoryId}
+          onClearCategoryFocus={() => setActiveCategoryId(null)}
         />
       </div>
 
       <AnimatePresence>
         {showAddModal && (
           <AddMemoryModal
+            categories={categories}
             onClose={() => setShowAddModal(false)}
             onSave={async (data) => {
               try {
@@ -397,6 +437,48 @@ function SearchPanel({ query, setQuery, onSearch, searching, results, error, onS
   )
 }
 
+// Compact legend — only real, populated categories ever appear (a
+// category with 0 nodes is real but has nothing to show yet, so it's
+// left out rather than listed as a dead entry). Clicking one focuses the
+// camera on that region and filters/dims the rest of the scene.
+function CategoryLegend({ categories, categoryCounts, activeCategoryId, onFocusCategory }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const populated = categories
+    .filter(c => (categoryCounts?.[c.id] || 0) > 0)
+    .sort((a, b) => (categoryCounts[b.id] || 0) - (categoryCounts[a.id] || 0))
+
+  if (populated.length === 0) return null
+
+  return (
+    <div style={{ position: 'absolute', top: 14, right: 14, width: collapsed ? 'auto' : 190, zIndex: 20 }}>
+      <div style={{ background: 'rgba(7,5,18,0.85)', backdropFilter: 'blur(14px)', border: '1px solid rgba(150,110,255,0.18)', borderRadius: 10, padding: collapsed ? '7px 10px' : '9px 11px' }}>
+        <div onClick={() => setCollapsed(c => !c)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: collapsed ? 0 : 7 }}>
+          <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.14em', color: '#8E86B8' }}>CATEGORIES</span>
+          <span style={{ color: '#5E587A', fontSize: 10 }}>{collapsed ? '▸' : '▾'}</span>
+        </div>
+        {!collapsed && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 300, overflowY: 'auto' }}>
+            {populated.map(c => {
+              const color = catColor(categories, c.id)
+              const active = activeCategoryId === c.id
+              return (
+                <div key={c.id} onClick={() => onFocusCategory(c.id)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '3px 5px', borderRadius: 5, cursor: 'pointer', background: active ? hexA(color, 0.16) : 'transparent' }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(150,110,255,0.06)' }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}`, flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontFamily: 'Exo 2, sans-serif', fontSize: 10.5, color: active ? '#EDE8FF' : '#B9A6FF', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                  <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 9.5, color: '#5E587A' }}>{categoryCounts[c.id]}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function TopBar({ onAddMemory, onShowFilters, filtersActive }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 20px', height: 52, flexShrink: 0, borderBottom: '1px solid rgba(100,70,220,0.13)', background: 'rgba(5,3,14,0.70)', backdropFilter: 'blur(20px)', zIndex: 20, position: 'relative' }}>
@@ -426,24 +508,36 @@ function SidePanel({ title, children }) {
 }
 
 function RightSidebar({
-  stats, categories, nodeCategoryMap, selectedNode, apiData,
+  stats, categories, categoryCounts, nodeCategoryMap, selectedNode, apiData,
   syncing, syncResult, onSync, categorizing, onCategorize, discovering, onDiscoverRelationships,
   onExportJSON, onOpenVault, onFocusNode, notify,
+  onSetPrimaryCategory, onConfirmCategory, onRejectCategory,
+  activeCategoryId, onClearCategoryFocus,
 }) {
   const selCats = selectedNode ? (nodeCategoryMap[selectedNode.id] || []) : []
   const connectedEdges = selectedNode
     ? (apiData.edges || []).filter(e => e.source === selectedNode.id || e.target === selectedNode.id)
     : []
+  const activeCategory = !selectedNode && activeCategoryId ? categories.find(c => c.id === activeCategoryId) : null
+  const activeCategoryNodes = activeCategory
+    ? (apiData.nodes || []).filter(n => {
+        const cats = nodeCategoryMap[n.id] || []
+        return cats.some(c => c.category_id === activeCategoryId) || n.category === activeCategoryId
+      })
+    : []
 
   return (
-    <div style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 12px', overflowY: 'auto', background: 'rgba(4,3,12,0.60)', backdropFilter: 'blur(22px)', borderLeft: '1px solid rgba(100,70,220,0.13)' }}>
+    <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 12px', overflowY: 'auto', background: 'rgba(4,3,12,0.60)', backdropFilter: 'blur(22px)', borderLeft: '1px solid rgba(100,70,220,0.13)' }}>
 
-      {/* Node inspection panel — every field here is real, only shown if present */}
+      {/* Node inspection panel — every field here is real, only shown if present.
+          Real Constellation nodes never carry a `type` field (constellation_manager.py
+          only ever creates memory nodes), so presence of `selectedNode` is itself
+          the real signal — a `type === 'memory'` check here was always false. */}
       <AnimatePresence>
-        {selectedNode?.type === 'memory' && (
+        {selectedNode && (
           <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            style={{ background: 'rgba(7,5,18,0.65)', border: `1px solid ${CAT[selectedNode.category]?.color || '#7B4DFF'}33`, borderRadius: 11, padding: '12px 14px' }}>
-            <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: CAT[selectedNode.category]?.color, letterSpacing: '0.16em', marginBottom: 5 }}>SELECTED NODE</div>
+            style={{ background: 'rgba(7,5,18,0.65)', border: `1px solid ${catColor(categories, selectedNode.category)}33`, borderRadius: 11, padding: '12px 14px' }}>
+            <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: catColor(categories, selectedNode.category), letterSpacing: '0.16em', marginBottom: 5 }}>SELECTED NODE</div>
             <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 16, fontWeight: 700, color: '#EDE8FF', marginBottom: 4 }}>{selectedNode.label}</div>
             {selectedNode.description && (
               <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 11.5, color: '#9d96c0', lineHeight: 1.5, marginBottom: 8 }}>{selectedNode.description}</div>
@@ -461,10 +555,24 @@ function RightSidebar({
                 <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: '#5E587A', letterSpacing: '0.1em', marginBottom: 4 }}>CATEGORIES</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                   {selCats.map(c => {
-                    const cat = categories.find(x => x.id === c.category_id)
+                    const color = catColor(categories, c.category_id)
+                    const isPending = c.source === 'automatic'
                     return (
-                      <span key={c.category_id} style={{ background: 'rgba(123,77,255,0.12)', border: '1px solid rgba(123,77,255,0.3)', borderRadius: 4, padding: '2px 6px', fontSize: 9, color: '#C7A6FF', fontFamily: 'Share Tech Mono' }}>
-                        {cat?.name || c.category_id} · {Math.round(c.confidence * 100)}% ({c.source})
+                      <span key={c.category_id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: hexA(color, 0.14), border: `1px solid ${hexA(color, 0.35)}`, borderRadius: 4, padding: '2px 5px 2px 6px', fontSize: 9, color, fontFamily: 'Share Tech Mono' }}>
+                        {c.is_primary && <span title="Primary — controls node color">●</span>}
+                        {catName(categories, c.category_id)} · {Math.round(c.confidence * 100)}%
+                        {!c.is_primary && (
+                          <button onClick={() => onSetPrimaryCategory(selectedNode.id, c.category_id)} title="Make primary"
+                            style={{ background: 'none', border: 'none', color, cursor: 'pointer', fontSize: 9, padding: 0, lineHeight: 1 }}>↑</button>
+                        )}
+                        {isPending && (
+                          <>
+                            <button onClick={() => onConfirmCategory(selectedNode.id, c.category_id)} title="Confirm"
+                              style={{ background: 'none', border: 'none', color: '#34D399', cursor: 'pointer', fontSize: 9, padding: 0, lineHeight: 1 }}>✓</button>
+                            <button onClick={() => onRejectCategory(selectedNode.id, c.category_id)} title="Reject"
+                              style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 9, padding: 0, lineHeight: 1 }}>✕</button>
+                          </>
+                        )}
                       </span>
                     )
                   })}
@@ -492,7 +600,10 @@ function RightSidebar({
 
             {selectedNode.tags?.length > 0 && (
               <div style={{ marginBottom: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {selectedNode.tags.map(t => <span key={t} style={{ background: hexA(CAT[selectedNode.category]?.color || '#7B4DFF', 0.12), border: `1px solid ${hexA(CAT[selectedNode.category]?.color || '#7B4DFF', 0.28)}`, borderRadius: 4, padding: '1px 5px', fontSize: 9, color: CAT[selectedNode.category]?.color, fontFamily: 'Share Tech Mono' }}>{t}</span>)}
+                {selectedNode.tags.map(t => {
+                  const color = catColor(categories, selectedNode.category)
+                  return <span key={t} style={{ background: hexA(color, 0.12), border: `1px solid ${hexA(color, 0.28)}`, borderRadius: 4, padding: '1px 5px', fontSize: 9, color, fontFamily: 'Share Tech Mono' }}>{t}</span>
+                })}
               </div>
             )}
 
@@ -500,6 +611,41 @@ function RightSidebar({
               <button onClick={() => { navigator.clipboard?.writeText(selectedNode.id); notify('Node ID copied') }} style={miniBtnStyle}>Copy ID</button>
               <button onClick={onOpenVault} style={miniBtnStyle}>Open Source</button>
               <button onClick={() => { navigator.clipboard?.writeText(`Ask Nyx: tell me about "${selectedNode.label}"`); notify('Question copied — paste it in chat') }} style={miniBtnStyle}>Ask Nyx</button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Category-details panel — real count + real member nodes, shown
+          when a category is focused from the legend (never while a node
+          is selected, so the two inspection modes don't overlap). */}
+      <AnimatePresence>
+        {activeCategory && (
+          <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            style={{ background: 'rgba(7,5,18,0.65)', border: `1px solid ${catColor(categories, activeCategory.id)}40`, borderRadius: 11, padding: '12px 14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ fontFamily: 'Share Tech Mono', fontSize: 8, color: catColor(categories, activeCategory.id), letterSpacing: '0.16em', marginBottom: 5 }}>CATEGORY</div>
+                <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 16, fontWeight: 700, color: '#EDE8FF' }}>{activeCategory.name}</div>
+              </div>
+              <button onClick={onClearCategoryFocus} style={{ background: 'none', border: 'none', color: '#5E587A', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            {activeCategory.description && (
+              <div style={{ fontFamily: 'Exo 2, sans-serif', fontSize: 11, color: '#9d96c0', lineHeight: 1.5, margin: '6px 0 8px' }}>{activeCategory.description}</div>
+            )}
+            <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: '#6B6394', marginBottom: 8 }}>
+              {categoryCounts?.[activeCategory.id] ?? activeCategoryNodes.length} real member{activeCategoryNodes.length === 1 ? '' : 's'}
+            </div>
+            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {activeCategoryNodes.map(n => (
+                <div key={n.id} onClick={() => onFocusNode(n.id)}
+                  style={{ cursor: 'pointer', fontFamily: 'Exo 2, sans-serif', fontSize: 11, color: '#B9A6FF', padding: '4px 0', borderBottom: '1px solid rgba(100,70,220,0.08)' }}>
+                  {n.label}
+                </div>
+              ))}
+              {activeCategoryNodes.length === 0 && (
+                <div style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: '#5E587A' }}>No member nodes.</div>
+              )}
             </div>
           </motion.div>
         )}
@@ -545,19 +691,19 @@ const miniBtnStyle = { fontFamily: 'Rajdhani, sans-serif', fontSize: 9, fontWeig
 const primaryBtnStyle = { width: '100%', padding: '10px 0', background: 'linear-gradient(135deg,rgba(100,55,220,0.45),rgba(70,30,180,0.38))', border: '1px solid rgba(155,114,255,0.42)', borderRadius: 9, cursor: 'pointer', fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', color: '#EDE8FF', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, boxShadow: '0 0 16px rgba(100,55,220,0.18)' }
 const secondaryBtnStyle = { width: '100%', padding: '9px 0', background: 'rgba(7,5,18,0.65)', border: '1px solid rgba(100,70,220,0.20)', borderRadius: 9, cursor: 'pointer', fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', color: '#8E86B8' }
 
-function FiltersPanel({ filters, setFilters, onClose }) {
+function FiltersPanel({ categories, filters, setFilters, onClose }) {
   const toggle = (setKey, val) => setFilters(f => {
     const s = new Set(f[setKey]); s.has(val) ? s.delete(val) : s.add(val); return { ...f, [setKey]: s }
   })
   return (
     <motion.div initial={{ x: -260 }} animate={{ x: 0 }} exit={{ x: -260 }} transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-      style={{ width: 240, flexShrink: 0, background: 'rgba(6,4,16,0.94)', backdropFilter: 'blur(22px)', borderRight: '1px solid rgba(100,70,220,0.18)', padding: '16px 14px', overflowY: 'auto', zIndex: 50 }}>
+      style={{ width: 220, flexShrink: 0, background: 'rgba(6,4,16,0.94)', backdropFilter: 'blur(22px)', borderRight: '1px solid rgba(100,70,220,0.18)', padding: '16px 14px', overflowY: 'auto', zIndex: 50 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 700, letterSpacing: '0.18em', color: '#C7A6FF' }}>FILTERS</div>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#5E587A', cursor: 'pointer', fontSize: 14 }}>✕</button>
       </div>
       <FilterSection title="CATEGORY">
-        {Object.entries(CAT).map(([k, v]) => <FilterChip key={k} label={v.label} color={v.color} active={filters.categories.has(k)} onClick={() => toggle('categories', k)} />)}
+        {categories.map(c => <FilterChip key={c.id} label={c.name.toUpperCase()} color={catColor(categories, c.id)} active={filters.categories.has(c.id)} onClick={() => toggle('categories', c.id)} />)}
       </FilterSection>
       <FilterSection title="SOURCE">
         {['chat', 'voice', 'vault', 'manual'].map(src => <FilterChip key={src} label={src.toUpperCase()} color="#7B4DFF" active={filters.sources.has(src)} onClick={() => toggle('sources', src)} />)}
@@ -616,8 +762,8 @@ function ContextMenu({ x, y, node, onPin, onDelete, onOpenVault, onClose }) {
   )
 }
 
-function AddMemoryModal({ onClose, onSave }) {
-  const [form, setForm] = useState({ label: '', category: 'vault', description: '', importance: 3, tags: '' })
+function AddMemoryModal({ categories, onClose, onSave }) {
+  const [form, setForm] = useState({ label: '', category: 'uncategorized', description: '', importance: 3, tags: '' })
   const [saving, setSaving] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -657,7 +803,7 @@ function AddMemoryModal({ onClose, onSave }) {
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 9, fontWeight: 600, letterSpacing: '0.18em', color: '#5E587A', marginBottom: 5 }}>CATEGORY</div>
             <select value={form.category} onChange={e => set('category', e.target.value)} style={{ width: '100%', background: 'rgba(10,8,26,0.70)', border: '1px solid rgba(100,70,220,0.25)', borderRadius: 8, padding: '9px 14px', fontFamily: 'Exo 2, sans-serif', fontSize: 13, color: '#EDE8FF', outline: 'none' }}>
-              {Object.entries(CAT).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
