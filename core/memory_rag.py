@@ -48,40 +48,71 @@ TOP_K = 6
 MIN_SCORE = 0.35            # below this the chunk is likely irrelevant
 MIN_CHUNKS_FOR_RAG = 12     # small corpus: just inject everything
 
+# Shared with core/relationship_manager.py, defined once here so the
+# threshold that decides "these are duplicates" can't drift between the
+# search-result grouping below and the graph's duplicate_of edges.
+DUPLICATE_THRESHOLD = 0.93
+MMR_LAMBDA = 0.7             # relevance vs. diversity trade-off for diversify_results()
+
 _warned_no_model = False
 
 
 # ── Chunking ──────────────────────────────────────────────────────────
 
-def _chunk_file(md_file: Path) -> list[str]:
-    """One chunk per bullet point; non-bullet prose grouped per paragraph.
-    Each chunk is prefixed with the file stem so 'Dark Mode' still carries
-    its 'preferences' context after retrieval."""
-    chunks = []
+def _split_section(section_text: str) -> list[str]:
+    """One piece per bullet point; non-bullet prose grouped per paragraph —
+    same fine-grained granularity as before, just now applied within a
+    heading section rather than a whole file, so retrieval stays precise."""
+    pieces = []
+    para: list[str] = []
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- ", "* ")):
+            if para:
+                pieces.append(" ".join(para)); para = []
+            content = stripped[2:].strip()
+            if len(content) >= 3:
+                pieces.append(content)
+        elif stripped:
+            para.append(stripped)
+        elif para:
+            pieces.append(" ".join(para)); para = []
+    if para:
+        pieces.append(" ".join(para))
+    return pieces
+
+
+def _chunk_file(md_file: Path) -> list[dict]:
+    """Frontmatter/heading/wiki-link-aware chunking (core/markdown_parser.py)
+    — each chunk carries a stable ID (file + heading + content), the
+    heading path as its retrieval-context prefix (finer than just the
+    filename), and any wiki-links/tags/aliases found in it. Plain Markdown
+    with none of that Obsidian syntax still chunks the same as before —
+    one heading-less section, split per bullet/paragraph."""
+    from core import markdown_parser
     try:
-        text = md_file.read_text(encoding="utf-8-sig")
+        parsed = markdown_parser.parse_markdown_file(md_file)
     except OSError as e:
         log.warning(f"[memory_rag] Could not read {md_file.name}: {e}")
         return []
 
-    para: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("- ", "* ")):
-            if para:
-                chunks.append(" ".join(para)); para = []
-            content = stripped[2:].strip()
-            if len(content) >= 3:
-                chunks.append(content)
-        elif stripped and not stripped.startswith("#"):
-            para.append(stripped)
-        elif para:
-            chunks.append(" ".join(para)); para = []
-    if para:
-        chunks.append(" ".join(para))
-
     stem = md_file.stem
-    return [f"[{stem}] {c}"[:500] for c in chunks if len(c.strip()) >= 3]
+    file_aliases = parsed["aliases"]
+    chunks = []
+    for section in parsed["chunks"]:
+        prefix = f"[{stem} > {section['heading_path']}]" if section["heading_path"] else f"[{stem}]"
+        for piece in _split_section(section["text"]):
+            if len(piece.strip()) < 3:
+                continue
+            chunk_id = markdown_parser.stable_chunk_id(md_file.name, section["heading_path"], piece)
+            chunks.append({
+                "id": chunk_id,
+                "text": f"{prefix} {piece}"[:500],
+                "wikilinks": section["wikilinks"],
+                "tags": section["tags"],
+                "aliases": file_aliases,
+            })
+    return chunks
 
 
 # ── Embeddings ────────────────────────────────────────────────────────
@@ -105,10 +136,16 @@ def _embed(text: str) -> list[float] | None:
 def _load_cache() -> dict:
     if CACHE_PATH.exists():
         try:
-            return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            # Pre-heading-aware-chunking cache used {"files": {...}} keyed
+            # by filename; the new format is {"chunks": {...}} keyed by
+            # stable chunk ID. Old cache just re-embeds once rather than
+            # crashing on the structure change.
+            if "chunks" in data:
+                return data
         except (json.JSONDecodeError, OSError):
             pass
-    return {"model": config.EMBED_MODEL, "files": {}}
+    return {"model": config.EMBED_MODEL, "chunks": {}}
 
 
 def _save_cache(cache: dict) -> None:
@@ -120,9 +157,11 @@ def _save_cache(cache: dict) -> None:
 
 
 def _indexed_chunks() -> list[dict] | None:
-    """Return [{text, vec, source_type, source_id}] for the whole vault,
-    re-embedding only files whose mtime changed. None → embedding
-    unavailable."""
+    """Return [{text, vec, source_type, source_id, wikilinks, tags,
+    aliases}] for the whole vault. Cached per *chunk* (stable ID = file +
+    heading path + content — core/markdown_parser.py), not per file, so
+    editing one section of a document only re-embeds that section, not the
+    whole file. None → embedding unavailable."""
     global _warned_no_model
     memory_dir = vault_bridge.get_memory_dir()
     if not memory_dir.exists():
@@ -130,22 +169,19 @@ def _indexed_chunks() -> list[dict] | None:
 
     cache = _load_cache()
     if cache.get("model") != config.EMBED_MODEL:
-        cache = {"model": config.EMBED_MODEL, "files": {}}
+        cache = {"model": config.EMBED_MODEL, "chunks": {}}
 
-    current_files = {}
+    current_chunks: dict[str, dict] = {}
     changed = False
     for md_file in sorted(memory_dir.glob("*.md")):
-        key = md_file.name
-        mtime = md_file.stat().st_mtime
-        entry = cache["files"].get(key)
-        if entry and entry.get("mtime") == mtime:
-            current_files[key] = entry
-            continue
+        for c in _chunk_file(md_file):
+            cid = c["id"]
+            cached = cache["chunks"].get(cid)
+            if cached and cached.get("source_id") == md_file.name:
+                current_chunks[cid] = cached
+                continue
 
-        chunks = _chunk_file(md_file)
-        embedded = []
-        for c in chunks:
-            vec = _embed(c)
+            vec = _embed(c["text"])
             if vec is None:
                 if not _warned_no_model:
                     log.info(
@@ -154,18 +190,17 @@ def _indexed_chunks() -> list[dict] | None:
                     )
                     _warned_no_model = True
                 return None
-            embedded.append({"text": c, "vec": vec})
-        current_files[key] = {"mtime": mtime, "chunks": embedded}
-        changed = True
+            current_chunks[cid] = {
+                "text": c["text"], "vec": vec, "source_type": "vault", "source_id": md_file.name,
+                "wikilinks": c["wikilinks"], "tags": c["tags"], "aliases": c["aliases"],
+            }
+            changed = True
 
-    if changed or set(cache["files"]) != set(current_files):
-        cache["files"] = current_files
+    if changed or set(cache["chunks"]) != set(current_chunks):
+        cache["chunks"] = current_chunks
         _save_cache(cache)
 
-    return [
-        {**c, "source_type": "vault", "source_id": key}
-        for key, entry in current_files.items() for c in entry["chunks"]
-    ]
+    return list(current_chunks.values())
 
 
 def _load_constellation_cache() -> dict:
@@ -275,12 +310,69 @@ def get_context(query: str) -> str:
     return f"## Relevant Memory\n\n{lines}"
 
 
+def _group_duplicates(scored: list[dict]) -> list[dict]:
+    """Greedy grouping in rank order: each not-yet-grouped item becomes a
+    primary; any lower-ranked item whose content vector is near-identical
+    (>= DUPLICATE_THRESHOLD) to that primary becomes a "supporting" member
+    instead of its own top-level result. No source is discarded — every
+    supporting member is still listed on its primary, just not competing
+    for a separate top-10 slot."""
+    grouped_away: set[int] = set()
+    primaries: list[dict] = []
+    for i, r in enumerate(scored):
+        if i in grouped_away:
+            continue
+        primary = {**r, "supporting": []}
+        for j in range(i + 1, len(scored)):
+            if j in grouped_away:
+                continue
+            if _cosine(r["vec"], scored[j]["vec"]) >= DUPLICATE_THRESHOLD:
+                primary["supporting"].append(scored[j])
+                grouped_away.add(j)
+        primaries.append(primary)
+    return primaries
+
+
+def _diversify(primaries: list[dict], top_k: int) -> list[dict]:
+    """Maximal-marginal-relevance-style selection: after deduplication,
+    still prefer results that aren't just near-copies of each other, so one
+    repeated theme can't consume the whole top-K even when it isn't a
+    strict enough duplicate to have been grouped above."""
+    if len(primaries) <= 1:
+        return primaries
+    remaining = list(primaries)
+    selected: list[dict] = []
+    while remaining and len(selected) < top_k:
+        if not selected:
+            best = max(remaining, key=lambda r: r["score"])
+        else:
+            def mmr_score(r):
+                max_sim = max(_cosine(r["vec"], s["vec"]) for s in selected)
+                return MMR_LAMBDA * r["score"] - (1 - MMR_LAMBDA) * max_sim
+            best = max(remaining, key=mmr_score)
+        selected.append(best)
+        remaining.remove(best)
+    return selected
+
+
+def _strip_vec(r: dict) -> dict:
+    result = {k: v for k, v in r.items() if k != "vec"}
+    if "supporting" in result:
+        result["supporting"] = [_strip_vec(s) for s in result["supporting"]]
+        result["supporting_count"] = len(result["supporting"])
+    return result
+
+
 def semantic_search(query: str, top_k: int = 10) -> dict:
     """Real semantic search across vault chunks + Constellation nodes —
     backs GET /api/constellation/search. Returns ranked, source-attributed
     results so the frontend can highlight the actual matching nodes and
     explain why each result matched (the score), never a fabricated match.
-    """
+
+    Near-duplicate results are grouped under one primary (with a
+    supporting-memories count, sources preserved) rather than letting the
+    same fact occupy several top-10 slots, and the remaining results are
+    diversified (MMR) so one repeated theme can't dominate."""
     vault_chunks = _indexed_chunks()
     node_chunks = _indexed_constellation_chunks()
     embeddings_available = not (vault_chunks is None and node_chunks is None)
@@ -298,10 +390,14 @@ def semantic_search(query: str, top_k: int = 10) -> dict:
     scored = sorted(
         (
             {"score": round(_cosine(qvec, c["vec"]), 4), "text": c["text"],
-             "source_type": c["source_type"], "source_id": c["source_id"]}
+             "source_type": c["source_type"], "source_id": c["source_id"], "vec": c["vec"]}
             for c in chunks
         ),
         key=lambda r: r["score"], reverse=True,
     )
-    results = [r for r in scored[:top_k] if r["score"] >= MIN_SCORE]
+    scored = [r for r in scored if r["score"] >= MIN_SCORE]
+
+    primaries = _group_duplicates(scored)
+    diversified = _diversify(primaries, top_k)
+    results = [_strip_vec(r) for r in diversified]
     return {"query": query, "results": results, "mode": "semantic", "message": None}

@@ -579,6 +579,80 @@ async def export_constellation():
     return constellation.get_export()
 
 
+# ── Categories & Relationships ───────────────────────────────────────────────
+
+class ManualCategoryRequest(BaseModel):
+    category_id: str
+    add: bool = True
+
+
+class EdgeConfirmRequest(BaseModel):
+    confirmed: bool
+
+
+@app.get("/api/constellation/categories")
+async def get_categories():
+    from core import category_manager
+    return {"categories": category_manager.get_taxonomy()}
+
+
+@app.get("/api/constellation/nodes/{node_id}/categories")
+async def get_node_categories(node_id: str):
+    from core import category_manager
+    return {"node_id": node_id, "categories": category_manager.get_node_categories(node_id)}
+
+
+@app.get("/api/constellation/node-categories")
+async def get_all_node_categories():
+    """Batch fetch — every node's category assignments in one call, so the
+    3D Constellation can cluster by category without an N+1 request per
+    node on every load."""
+    from core import category_manager
+    return {"assignments": category_manager._load_assignments()}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories")
+async def set_node_category(node_id: str, req: ManualCategoryRequest):
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    try:
+        cats = category_manager.set_manual_category(node_id, req.category_id, req.add)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/categorize")
+async def categorize_all():
+    """Real backend job — re-runs automatic multi-label categorization for
+    every node, off the event loop since embedding calls are blocking."""
+    import asyncio
+    from core import category_manager
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, category_manager.reassign_all)
+    return result
+
+
+@app.post("/api/constellation/discover-relationships")
+async def discover_relationships():
+    """Real backend job — computes evidence-backed related_to/duplicate_of
+    edges from actual embedding similarity, off the event loop."""
+    import asyncio
+    from core import relationship_manager
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, relationship_manager.discover_relationships)
+    return result
+
+
+@app.post("/api/constellation/edges/{edge_id}/confirm")
+async def confirm_edge(edge_id: str, req: EdgeConfirmRequest):
+    edge = constellation.confirm_edge(edge_id, req.confirmed)
+    if not edge:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    return edge
+
+
 @app.get("/api/constellation/search")
 async def search_constellation(q: str, limit: int = 10):
     """Real semantic search over vault chunks + Constellation nodes —

@@ -99,6 +99,53 @@ export async function openVault() {
   return res.json()
 }
 
+export async function getCategories() {
+  const res = await fetch(`${API_URL}/api/constellation/categories`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { categories: [{id, name, description, parent_id}] }
+}
+
+export async function getAllNodeCategories() {
+  const res = await fetch(`${API_URL}/api/constellation/node-categories`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { assignments: { [nodeId]: [{category_id, confidence, source}] } }
+}
+
+export async function setNodeCategory(nodeId, categoryId, add = true) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId, add }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function categorizeAll() {
+  const res = await fetch(`${API_URL}/api/constellation/categorize`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function discoverRelationships() {
+  const res = await fetch(`${API_URL}/api/constellation/discover-relationships`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function confirmEdge(edgeId, confirmed) {
+  const res = await fetch(`${API_URL}/api/constellation/edges/${edgeId}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 // ── Network Operations ────────────────────────────
 export async function getNetworkStatus() {
   const res = await fetch(`${API_URL}/api/network/status`)
