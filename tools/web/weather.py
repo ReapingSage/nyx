@@ -8,18 +8,24 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
+# "wh?eather" tolerates the common "wheather" typo (an extra h after w)
+# without also matching unrelated words — plain substring matching on
+# "weather" missed it entirely, silently falling through to the LLM, which
+# then hallucinated a fake answer instead of using the real weather lookup.
+_W = r"wh?eather"
+
 # Patterns to extract a location from a weather query
 _PATTERNS = [
-    r"what(?:'s|\s+is|\s+was)\s+the\s+weather\s+looking\s+like\s+(?:in|for|at)\s+(.+)",
-    r"what(?:'s|\s+is|\s+was)\s+the\s+weather\s+(?:like\s+)?(?:in|for|at|around)\s+(.+)",
-    r"how(?:'s|\s+is)\s+the\s+weather\s+(?:in|for|at)\s+(.+)",
-    r"weather\s+(?:in|for|at|around)\s+(.+)",
-    r"weather\s+(?:\w+\s+){0,3}(?:in|for|at)\s+(.+)",
+    rf"what(?:'s|\s+is|\s+was)\s+the\s+{_W}\s+looking\s+like\s+(?:in|for|at)\s+(.+)",
+    rf"what(?:'s|\s+is|\s+was)\s+the\s+{_W}\s+(?:like\s+)?(?:in|for|at|around)\s+(.+)",
+    rf"how(?:'s|\s+is)\s+the\s+{_W}\s+(?:in|for|at)\s+(.+)",
+    rf"{_W}\s+(?:in|for|at|around)\s+(.+)",
+    rf"{_W}\s+(?:\w+\s+){{0,3}}(?:in|for|at)\s+(.+)",
 ]
 
 
 def is_weather_query(text: str) -> bool:
-    return "weather" in text.lower()
+    return re.search(_W, text.lower()) is not None
 
 
 def extract_location(text: str) -> str | None:

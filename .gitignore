@@ -46,8 +46,13 @@ memory/tasks.json
 memory/reminders.json
 memory/event_log.json
 
-# Vault embedding cache (derived from personal memory notes)
+# Vault/Constellation embedding + derived-index caches (rebuildable from
+# source Markdown/Constellation data — never the source of truth)
 memory/vault_embeddings.json
+memory/constellation_embeddings.json
+memory/category_embeddings.json
+memory/categories.json
+memory/node_categories.json
 
 # Music library — personal audio files + index, never for the repo
 music/library/
@@ -56,3 +61,11 @@ memory/music_library.json
 memory/plugins.json
 memory/agents.json
 music/banners/
+
+# Audiobooks library — personal audio/books + index, never for the repo
+audiobooks/library/
+audiobooks/covers/
+audiobooks/sources/
+memory/audiobook_library.json
+# Kokoro model weights (~120MB) — downloaded on first use, never for the repo
+audiobooks/models/

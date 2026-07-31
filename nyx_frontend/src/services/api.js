@@ -11,6 +11,33 @@ export async function sendMessage(message) {
   return res.json() // { response, model, timestamp }
 }
 
+// Streams newline-delimited JSON from /api/voice/respond — the real path
+// behind the chat overlay (typed or spoken). Calls onEvent(obj) per line,
+// where obj is {type:'ack'|'chunk'|'done', ...}. Same reader/decoder/buffer
+// pattern as installPlugin above, just against a different endpoint.
+export async function sendVoiceRespondStreaming(transcript, wantAudio, onEvent) {
+  const res = await fetch(`${API_URL}/api/voice/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcript, want_audio: wantAudio }),
+  })
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try { onEvent(JSON.parse(line)) } catch { /* ignore malformed */ }
+    }
+  }
+}
+
 // ── System stats ──────────────────────────────────
 export async function getSystemStats() {
   const res = await fetch(`${API_URL}/api/system`)
@@ -84,8 +111,134 @@ export async function exportConstellation() {
   return res.json()
 }
 
+export async function searchConstellation(query, limit = 10) {
+  const res = await fetch(`${API_URL}/api/constellation/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json() // { query, results: [{score, text, source_type, source_id}], mode, message }
+}
+
 export async function openVault() {
   const res = await fetch(`${API_URL}/api/constellation/open-vault`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getCategories() {
+  const res = await fetch(`${API_URL}/api/constellation/categories`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { categories: [{id, name, description, parent_id}] }
+}
+
+export async function getAllNodeCategories() {
+  const res = await fetch(`${API_URL}/api/constellation/node-categories`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { assignments: { [nodeId]: [{category_id, confidence, source}] } }
+}
+
+export async function setNodeCategory(nodeId, categoryId, add = true) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId, add }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function categorizeAll() {
+  const res = await fetch(`${API_URL}/api/constellation/categorize`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function discoverRelationships() {
+  const res = await fetch(`${API_URL}/api/constellation/discover-relationships`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setPrimaryCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/primary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function confirmNodeCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/${categoryId}/confirm`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function rejectNodeCategory(nodeId, categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/nodes/${nodeId}/categories/${categoryId}/reject`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getCategoryCounts() {
+  const res = await fetch(`${API_URL}/api/constellation/category-counts`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { counts: { [categoryId]: number } }
+}
+
+export async function renameCategory(categoryId, name) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setCategoryColor(categoryId, color) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/color`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function restoreCategoryColor(categoryId) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/color/restore`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function mergeCategory(categoryId, intoId) {
+  const res = await fetch(`${API_URL}/api/constellation/categories/${categoryId}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ into_id: intoId }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function confirmEdge(edgeId, confirmed) {
+  const res = await fetch(`${API_URL}/api/constellation/edges/${edgeId}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed }),
+  })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
@@ -301,6 +454,21 @@ export async function deleteTask(id) {
   return res.json()
 }
 
+// The Tasks page's "AI Task" queue runs entirely client-side (calls
+// /api/chat directly, tracks status in a local reducer) — this is its only
+// touchpoint with the backend, so a finished AI task can proactively
+// notify (toast + voice + chat) instead of only updating in-page state.
+// Fire-and-forget: a failed notify shouldn't disrupt the task UI itself.
+export async function notifyAiTaskComplete(title, ok = true) {
+  try {
+    await fetch(`${API_URL}/api/tasks/ai-task-complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, ok }),
+    })
+  } catch { /* non-fatal */ }
+}
+
 // ── Reminders ───────────────────────────────────────
 export async function getReminders() {
   const res = await fetch(`${API_URL}/api/reminders`)
@@ -485,6 +653,228 @@ export async function scanMusicNow() {
   return res.json()
 }
 
+// ── Audiobooks (The Forge) ───────────────────────────
+export async function getAudiobookLibrary() {
+  const res = await fetch(`${API_URL}/api/audiobooks/library`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function uploadAudiobookFiles(files) {
+  const formData = new FormData()
+  for (const f of files) formData.append('files', f)
+  const res = await fetch(`${API_URL}/api/audiobooks/upload`, { method: 'POST', body: formData })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export function audiobookFileUrl(bookId, chapterIndex) {
+  return `${API_URL}/api/audiobooks/file/${bookId}/${chapterIndex}`
+}
+
+export async function updateAudiobook(bookId, updates) {
+  const res = await fetch(`${API_URL}/api/audiobooks/book/${bookId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteAudiobook(bookId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/book/${bookId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function updateAudiobookPosition(bookId, positionSeconds, chapterIndex) {
+  const res = await fetch(`${API_URL}/api/audiobooks/book/${bookId}/position`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ position_seconds: positionSeconds, chapter_index: chapterIndex }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setBookCover(bookId, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${API_URL}/api/audiobooks/book/${bookId}/cover`, { method: 'POST', body: formData })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function clearBookCover(bookId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/book/${bookId}/cover`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export function bookCoverUrl(bookId, v) {
+  return `${API_URL}/api/audiobooks/cover/${bookId}${v ? `?v=${v}` : ''}`
+}
+
+export async function createAudiobookCollection(name, bookIds) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, book_ids: bookIds }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteAudiobookCollection(id) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function renameAudiobookCollection(id, name) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function addBookToCollection(collectionId, bookId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${collectionId}/books`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ book_id: bookId }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function removeBookFromCollection(collectionId, bookId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${collectionId}/books/${bookId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setCollectionBanner(collectionId, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${collectionId}/banner`, { method: 'POST', body: formData })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function clearCollectionBanner(collectionId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/collections/${collectionId}/banner`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export function collectionBannerUrl(collectionId, v) {
+  return `${API_URL}/api/audiobooks/collections/${collectionId}/banner${v ? `?v=${v}` : ''}`
+}
+
+export async function getAudiobookVoices() {
+  const res = await fetch(`${API_URL}/api/audiobooks/voices`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createVoiceBlend(name, components) {
+  const res = await fetch(`${API_URL}/api/audiobooks/voices/blend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, components }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteVoiceBlend(blendId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/voices/blend/${blendId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export function previewVoiceUrl(idOrBlendId, isBlend) {
+  return `${API_URL}/api/audiobooks/voices/preview/${idOrBlendId}${isBlend ? '?is_blend=true' : ''}`
+}
+
+export async function previewVoiceAdhoc(components) {
+  const res = await fetch(`${API_URL}/api/audiobooks/voices/preview-adhoc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ components }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.blob()
+}
+
+export async function importAudiobookFile(file, title, author) {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (title) formData.append('title', title)
+  formData.append('author', author || '')
+  const res = await fetch(`${API_URL}/api/audiobooks/import-file`, { method: 'POST', body: formData })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importAudiobookText(title, author, text) {
+  const res = await fetch(`${API_URL}/api/audiobooks/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, author, text }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function generateAudiobook(bookId, voiceId, voiceBlendId, chapterIndices) {
+  const res = await fetch(`${API_URL}/api/audiobooks/${bookId}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice_id: voiceId, voice_blend_id: voiceBlendId, chapter_indices: chapterIndices }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function getAudiobookJob(jobId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/jobs/${jobId}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function cancelAudiobookJob(jobId) {
+  const res = await fetch(`${API_URL}/api/audiobooks/jobs/${jobId}/cancel`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 // ── Plugins (SageTech MarketPlace) ──────────────────
 export async function getPlugins() {
   const res = await fetch(`${API_URL}/api/plugins`)
@@ -535,4 +925,64 @@ export async function importBackup(file) {
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
+}
+
+// ── Workers (Agents dashboard) ───────────────────────
+// Distinct from the older /api/agents (agents_store) endpoints above —
+// these back the real specialized workers: Momus, Hemera, Analyst, OpenClaw.
+export async function getWorkers() {
+  const res = await fetch(`${API_URL}/api/workers`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { workers: [...] }
+}
+
+export async function getWorker(id) {
+  const res = await fetch(`${API_URL}/api/workers/${id}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setWorkerProviderKey(id, provider, key) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, key }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function removeWorkerProviderKey(id, provider) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/${provider}/key`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function setWorkerPriority(id, order) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/priority`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function testWorkerProvider(id, provider) {
+  const res = await fetch(`${API_URL}/api/workers/${id}/providers/${provider}/test`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() // { ok, message }
 }

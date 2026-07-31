@@ -1,8 +1,31 @@
 {
   "marketplace": "SageTech MarketPlace",
   "schema_version": 1,
-  "updated": "2026-07-07",
+  "updated": "2026-07-31",
   "plugins": [
+    {
+      "id": "audiobooks",
+      "name": "Audiobooks",
+      "tagline": "Nyx's local audiobook library, narrator, and voice studio",
+      "description": "Build a local audiobook library from uploaded audio or your own EPUB/PDF/text — narrated by real Kokoro text-to-speech with chapter-accurate playback, resume position, collections, and a voice-blending studio to mix custom narrator voices. Adds The Forge → Audiobooks to your sidebar.",
+      "category": "The Forge",
+      "icon": "audiobooks",
+      "version": "1.0.0",
+      "author": "SageTech",
+      "size_mb": 0,
+      "source": "bundled",
+      "download_url": null,
+      "python_deps": ["mutagen", "kokoro-onnx", "onnxruntime", "soundfile", "ebooklib", "pymupdf"],
+      "requires_restart": true,
+      "sidebar": { "section": "THE FORGE", "id": "audiobooks", "label": "Audiobooks" },
+      "features": [
+        "Local library with collections/series grouping",
+        "Real Kokoro TTS generation from EPUB, PDF, or typed text",
+        "Chapter-accurate playback with resume position, saved per book",
+        "Voice-mixing studio — blend built-in Kokoro voices and save as a reusable voice",
+        "Dedicated Voices browser with preview playback for every built-in and blended voice"
+      ]
+    },
     {
       "id": "music",
       "name": "Music",
@@ -24,6 +47,28 @@
         "SoundCloud links — save once, replay forever",
         "Watch folders — auto-import dropped audio",
         "Voice & chat control (\"play after dark\", \"pause the music\")"
+      ]
+    },
+    {
+      "id": "agents",
+      "name": "Agents",
+      "tagline": "Nyx's real specialized AI workforce",
+      "description": "A live control center for Nyx's real specialized workers — Momus (fact-checking), Hemera (trend tracking), Analyst (reasoning), and OpenClaw (desktop automation) — with real status, provider configuration, API key management, and automatic fallback. Adds The Forge → Agents to your sidebar.",
+      "category": "The Forge",
+      "icon": "agents",
+      "version": "1.0.0",
+      "author": "SageTech",
+      "size_mb": 0,
+      "source": "bundled",
+      "download_url": null,
+      "python_deps": [],
+      "requires_restart": false,
+      "sidebar": { "section": "THE FORGE", "id": "agents", "label": "Agents" },
+      "features": [
+        "Real agent registry — no fabricated agents or example data",
+        "Per-agent provider priority with automatic health-based fallback",
+        "Secure API key management (masked, backend-only, never logged)",
+        "Live status: active, processing, unavailable, missing configuration"
       ]
     }
   ]

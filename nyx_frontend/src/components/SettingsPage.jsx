@@ -1109,6 +1109,51 @@ function NotificationsSection() {
         >{testing ? 'Sending...' : 'Send Test Notification'}</button>
         {testResult && <div style={{ marginTop: 8, fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-muted)' }}>{testResult}</div>}
       </div>
+
+      <div style={PANEL}>
+        <span style={SEC_TITLE}>Proactive Notifications</span>
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-disabled)', marginBottom: 10 }}>
+          Nyx telling you things unprompted — a reminder or timer fired, a task finished, an audiobook finished narrating, disk space is low.
+        </div>
+        <ToggleControl label="Speak Proactive Notifications" value={settings.speak_proactive} onChange={v => update({ speak_proactive: v })} description="Nyx says it out loud, not just a toast + chat message" />
+        <ToggleControl label="Reminders" value={settings.proactive_reminders} onChange={v => update({ proactive_reminders: v })} description="A reminder came due" />
+        <ToggleControl label="Timers" value={settings.proactive_timers} onChange={v => update({ proactive_timers: v })} description="A timer finished" />
+        <ToggleControl label="Tasks" value={settings.proactive_tasks} onChange={v => update({ proactive_tasks: v })} description="A tracked task completed" />
+        <ToggleControl label="Audiobooks" value={settings.proactive_audiobooks} onChange={v => update({ proactive_audiobooks: v })} description="A book finished (or failed) narrating" />
+        <ToggleControl label="System Health" value={settings.proactive_system_health} onChange={v => update({ proactive_system_health: v })} description="Disk space running low" />
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ marginBottom: 6 }}>
+            <span style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>Quiet Hours</span>
+          </div>
+          <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9.5, color: 'var(--color-text-disabled)', marginBottom: 8 }}>
+            Still logged, but no toast or voice during this window. Leave blank to disable.
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <input
+              type="time"
+              defaultValue={settings.quiet_hours_start}
+              onBlur={e => update({ quiet_hours_start: e.target.value })}
+              style={{
+                padding: '7px 10px', background: 'rgba(var(--color-bg-rgb), 0.70)',
+                border: '1px solid rgba(var(--color-primary-rgb), 0.22)', borderRadius: 7,
+                color: 'var(--color-accent)', fontFamily: 'Share Tech Mono', fontSize: 10, outline: 'none',
+              }}
+            />
+            <span style={{ fontFamily: 'Share Tech Mono', fontSize: 10, color: 'var(--color-text-disabled)' }}>to</span>
+            <input
+              type="time"
+              defaultValue={settings.quiet_hours_end}
+              onBlur={e => update({ quiet_hours_end: e.target.value })}
+              style={{
+                padding: '7px 10px', background: 'rgba(var(--color-bg-rgb), 0.70)',
+                border: '1px solid rgba(var(--color-primary-rgb), 0.22)', borderRadius: 7,
+                color: 'var(--color-accent)', fontFamily: 'Share Tech Mono', fontSize: 10, outline: 'none',
+              }}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

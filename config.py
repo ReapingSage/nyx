@@ -24,7 +24,9 @@ OPENCLAW_TOKEN: str = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 
 # ── Model roster ─────────────────────────────────────────
 # laptop-lite branch: smaller models for limited RAM/CPU machines.
-# Same roles as main — just lighter weight per role.
+# Same roles as main — just lighter weight per role. main's MODEL_MAIN
+# moved from 14b to 7b (still too heavy for this branch's target
+# hardware) — laptop-lite intentionally stays on the 3b class here.
 MODEL_MAIN     = "llama3.2:3b"
 MODEL_FAST     = "llama3.2:3b"
 MODEL_CODER    = "qwen2.5-coder:3b"
@@ -42,6 +44,11 @@ AI_PROVIDER: str = os.getenv("AI_PROVIDER", "ollama")
 # ── Cloud providers (optional / future) ──────────────────
 OPENAI_API_KEY:    str = os.getenv("OPENAI_API_KEY",    "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Web search — Tavily is primary when a key is set (real API, 1000 free
+# searches/month), tools/web/search.py falls back to DuckDuckGo (free,
+# keyless, no quota) whenever Tavily is unset, quota-exhausted, or errors.
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
 # ── Personality ───────────────────────────────────────────
 USER_NAME:  str = os.getenv("USER_NAME",  "Anthony")

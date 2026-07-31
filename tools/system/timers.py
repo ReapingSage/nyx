@@ -65,15 +65,13 @@ def _fire(timer_id: str) -> None:
     label = info["label"]
     log.info(f"[timers] Timer done: {label}")
     try:
-        from core import event_log
-        event_log.log_event("timer", "Timer done", label)
+        # Runs on a plain threading.Timer callback thread — no event loop
+        # here at all, so fire() (synchronous, safe from any thread) can be
+        # called directly, same as the old notify() call was.
+        from core import proactive
+        proactive.fire("timers", "Timer done", label)
     except Exception as e:
-        log.warning(f"[timers] Event log failed: {e}")
-    try:
-        from tools.system.notifications import notify
-        notify("Timer done", label, category="general")
-    except Exception as e:
-        log.warning(f"[timers] Notification failed: {e}")
+        log.warning(f"[timers] Proactive notification failed: {e}")
 
 
 def set_timer(seconds: float, label: str = "") -> str:

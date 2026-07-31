@@ -44,6 +44,7 @@ export const PAGE_PATHS = {
   settings:   '/settings',
   globalview: '/global-view',
   music:      '/music',
+  audiobooks: '/audiobooks',
   agents:     '/agents',
 }
 

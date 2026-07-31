@@ -15,18 +15,28 @@ log = get_logger(__name__)
 DB_PATH = Path(__file__).parent.parent / "memory" / "constellation.json"
 
 VALID_CATEGORIES = {
-    'identity', 'projects', 'skills', 'systems',
-    'preferences', 'events', 'relationships', 'vault',
+    'projects', 'technology', 'people', 'hardware', 'software', 'ai_models',
+    'servers_network', 'research', 'ideas', 'goals', 'decisions', 'tasks',
+    'events', 'preferences', 'personal_knowledge', 'documents', 'uncategorized',
 }
 
-# Map old category names → new ones (migration for existing data)
+# Map every category name this field has ever held → the current 17-category
+# taxonomy (core/category_manager.py owns the taxonomy itself; this map just
+# keeps the legacy single `category` field on old nodes in sync with it).
 _OLD_CAT_MAP = {
-    'goals':       'identity',
-    'interests':   'preferences',
-    'values':      'identity',
-    'experiences': 'events',
-    'personal':    'identity',
-    'knowledge':   'vault',
+    # Pre-8-category names
+    'interests':     'preferences',
+    'values':        'personal_knowledge',
+    'experiences':   'events',
+    'personal':      'personal_knowledge',
+    'knowledge':     'documents',
+    # Previous 8-category taxonomy → new 17 (confirmed mapping)
+    'identity':      'personal_knowledge',
+    'skills':        'technology',
+    'systems':       'servers_network',
+    'relationships': 'people',
+    'vault':         'personal_knowledge',
+    # 'projects', 'preferences', 'events' are unchanged names, no entry needed
 }
 
 
@@ -82,9 +92,18 @@ class ConstellationManager:
     def get_all(self) -> dict:
         self._load()
         nodes = [self._apply_decay(n) for n in self._data['nodes']]
+        # Legacy edges predate the typed-relationship schema — default them
+        # to what they always implicitly were, rather than showing `None`.
+        edges = [
+            e if 'relationship_type' in e else {**e, 'relationship_type': 'mentioned_with',
+                                                  'confidence': e.get('strength', 0.5),
+                                                  'supporting_source_ids': [], 'creation_method': 'co_mention',
+                                                  'manually_confirmed': False}
+            for e in self._data['edges']
+        ]
         return {
             "nodes": nodes,
-            "edges": self._data['edges'],
+            "edges": edges,
             "stats": {
                 "total_memories": len(nodes),
                 "total_edges":    len(self._data['edges']),
@@ -124,7 +143,7 @@ class ConstellationManager:
         category = category.lower()
         category = _OLD_CAT_MAP.get(category, category)   # migrate old names on the fly
         if category not in VALID_CATEGORIES:
-            category = 'vault'
+            category = 'uncategorized'
 
         existing = self.find_by_label(label, category)
         if existing:
@@ -190,30 +209,64 @@ class ConstellationManager:
             return True
         return False
 
-    def add_edge(self, source_id: str, target_id: str) -> dict:
-        """Create or strengthen a co-mention edge."""
+    # Relationship types this system will ever create on its own — no
+    # unsupported type gets invented merely because it "sounds plausible".
+    SAFE_RELATIONSHIP_TYPES = {
+        "mentioned_with", "related_to", "belongs_to", "supports", "duplicate_of", "supersedes",
+    }
+
+    def add_edge(self, source_id: str, target_id: str, relationship_type: str = "mentioned_with",
+                 confidence: float = 0.5, supporting_source_ids: list | None = None,
+                 creation_method: str = "co_mention") -> dict:
+        """Create or strengthen a typed, evidence-backed edge. Defaults
+        preserve the original co-mention behavior for existing callers
+        (core/memory_extractor.py) that don't pass the new fields."""
         self._load()
         if source_id == target_id:
             return {}
+        if relationship_type not in self.SAFE_RELATIONSHIP_TYPES:
+            relationship_type = "related_to"
+
         pair = tuple(sorted([source_id, target_id]))
         existing = next(
             (e for e in self._data['edges']
-             if tuple(sorted([e['source'], e['target']])) == pair),
+             if tuple(sorted([e['source'], e['target']])) == pair
+             and e.get('relationship_type', 'mentioned_with') == relationship_type),
             None
         )
         if existing:
             existing['strength'] = round(min(1.0, existing.get('strength', 0.3) + 0.08), 3)
+            existing['confidence'] = round(max(existing.get('confidence', 0.5), confidence), 3)
+            for sid in (supporting_source_ids or []):
+                if sid not in existing.setdefault('supporting_source_ids', []):
+                    existing['supporting_source_ids'].append(sid)
             self._save()
             return existing
 
         edge = {
-            "id":       str(uuid.uuid4()),
-            "source":   source_id,
-            "target":   target_id,
-            "strength": 0.30,
-            "created":  _now(),
+            "id":                    str(uuid.uuid4()),
+            "source":                source_id,
+            "target":                target_id,
+            "relationship_type":     relationship_type,
+            "strength":              0.30,
+            "confidence":            round(max(0.0, min(1.0, confidence)), 3),
+            "supporting_source_ids": list(supporting_source_ids or []),
+            "creation_method":       creation_method,
+            "manually_confirmed":    False,
+            "created":               _now(),
         }
         self._data['edges'].append(edge)
+        self._save()
+        return edge
+
+    def confirm_edge(self, edge_id: str, confirmed: bool) -> dict | None:
+        """User confirms or rejects a relationship — an explicit human
+        judgment that future automatic passes should not silently override."""
+        self._load()
+        edge = next((e for e in self._data['edges'] if e['id'] == edge_id), None)
+        if not edge:
+            return None
+        edge['manually_confirmed'] = confirmed
         self._save()
         return edge
 

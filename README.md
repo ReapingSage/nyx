@@ -64,6 +64,16 @@ OLLAMA_BASE_URL=http://localhost:11434
 USER_NAME=YourName
 ```
 
+Optional — web search works out of the box via DuckDuckGo (free, no key,
+no signup) with no setup at all. For better/more reliable results, sign up
+free at [app.tavily.com](https://app.tavily.com) (1,000 searches/month, no
+card required) and add your own key; Nyx automatically falls back to
+DuckDuckGo if it's unset, exhausted, or Tavily errors:
+
+```
+TAVILY_API_KEY=tvly-your-key-here
+```
+
 ### 6. Run NYX
 
 **Backend:**

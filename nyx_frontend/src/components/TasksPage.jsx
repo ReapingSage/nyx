@@ -11,6 +11,7 @@ import {
   CheckCircle2, AlertCircle, Clock, MessageSquare,
 } from 'lucide-react'
 import { API_URL } from '../utils/constants.js'
+import { notifyAiTaskComplete } from '../services/api.js'
 
 // ─────────────────────────────────────────────────────────────
 // TASK STATE MACHINE
@@ -1287,9 +1288,11 @@ export default function TasksPage() {
         })
         .then(data => {
           dispatch({ type:'SET_RESULT', id: task.id, result: data.response, now: Date.now() })
+          notifyAiTaskComplete(task.title, true)
         })
         .catch(err => {
           dispatch({ type:'SET_ERROR', id: task.id, error: err.message, now: Date.now() })
+          notifyAiTaskComplete(task.title, false)
         })
         .finally(() => {
           pendingRef.current.delete(task.id)

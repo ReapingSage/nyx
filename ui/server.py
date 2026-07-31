@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 import psutil
-from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,13 +35,21 @@ from core.agent import NyxAgent
 from core.constellation_manager import constellation
 from core import model_manager
 from core import music_store
+from core import audiobook_store
+from core import tts_engine
+from core import ebook_text
 from core import plugin_registry
 from core import agents_store
+from core import agent_registry
+from core import provider_router
+from core import api_credentials
+from core import memory_rag
 from core import storage_provider
 from core import app_settings
 from core import event_log
 from core import task_store
 from core import reminders_store
+from core import proactive
 from brain import openclaw_provider
 from utils.logger import get_logger
 
@@ -84,19 +92,35 @@ async def _start_background_loops():
     from tools.system import music_control
     music_control.register(_music_broadcast, lambda: len(voice_ws.clients) > 0)
 
+    # Proactive notifications (core/proactive.py) — same hand-off pattern as
+    # music_control above: fire() runs on worker threads with no event loop
+    # of their own, so the WebSocket broadcast is done via this callback.
+    def _proactive_broadcast(payload: dict):
+        asyncio.run_coroutine_threadsafe(voice_ws.broadcast(payload), loop)
+
+    from core import proactive
+    proactive.register(_proactive_broadcast)
+
+    # One-time category taxonomy migration (old 8 categories -> new 17).
+    # Idempotent — safe to run on every startup, only touches assignments
+    # still on the old scheme.
+    from core import category_manager
+    migration_result = await loop.run_in_executor(None, category_manager.migrate_legacy_categories)
+    if migration_result["migrated_assignments"]:
+        log.info(f"[categories] Migrated {migration_result['migrated_assignments']} legacy category assignments to new taxonomy.")
+
     async def reminder_loop():
-        from tools.system.notifications import notify
         while True:
             try:
                 for r in reminders_store.due_unfired():
                     reminders_store.mark_fired(r["id"])
                     log.info(f"[reminders] Firing: {r['name']}")
-                    event_log.log_event("reminders", f"Reminder due: {r['name']}")
-                    # Toast blocks until dismissed — keep it off the event loop
+                    # fire() does log+toast+voice+broadcast as one unit and
+                    # blocks (toast waits for dismissal) — keep it off the
+                    # event loop, same as the old notify()-only call did.
                     asyncio.get_event_loop().run_in_executor(
-                        None, notify, "Reminder", r["name"], "general"
+                        None, proactive.fire, "reminders", "Reminder", r["name"]
                     )
-                    await voice_ws.broadcast({"type": "reminder_due", "reminder": r})
             except Exception as e:
                 log.warning(f"[reminders] Scheduler error (non-fatal): {e}")
             await asyncio.sleep(20)
@@ -120,6 +144,37 @@ async def _start_background_loops():
             await asyncio.sleep(45)
 
     asyncio.get_event_loop().create_task(watch_folder_loop())
+
+    async def system_health_loop():
+        """Periodic disk-space check. Per-condition cooldown (not per-poll)
+        so crossing the threshold warns once, not every 5 minutes for as
+        long as disk stays low — same spirit as provider_router.py's
+        cooldown-based health tracking."""
+        DISK_WARN_PERCENT = 90
+        COOLDOWN_SEC = 6 * 3600
+        last_fired: dict[str, float] = {}
+
+        def should_fire(key: str) -> bool:
+            now = time.time()
+            if now - last_fired.get(key, 0) < COOLDOWN_SEC:
+                return False
+            last_fired[key] = now
+            return True
+
+        while True:
+            try:
+                disk = await loop.run_in_executor(None, psutil.disk_usage, "/")
+                if disk.percent >= DISK_WARN_PERCENT and should_fire("disk_low"):
+                    free_gb = disk.free / (1024 ** 3)
+                    await loop.run_in_executor(
+                        None, proactive.fire, "system_health", "Low disk space",
+                        f"You're at {disk.percent:.0f}% disk usage — only {free_gb:.1f}GB free."
+                    )
+            except Exception as e:
+                log.warning(f"[system_health] Check error (non-fatal): {e}")
+            await asyncio.sleep(300)
+
+    asyncio.get_event_loop().create_task(system_health_loop())
 
 
 @app.on_event("shutdown")
@@ -214,9 +269,18 @@ class ChatResponse(BaseModel):
 
 class VoiceTranscriptRequest(BaseModel):
     transcript: str
+    # False for typed chat in text-only mode — tells the backend not to
+    # bother generating ack/response speech at all, since the frontend was
+    # only ever going to discard it unplayed. Defaults True so existing
+    # spoken-voice callers are unaffected.
+    want_audio: bool = True
 
 
 # ── Voice: transcript → ack TTS → AI → response TTS ──────────────
+# Streams NDJSON so the reply appears as it's generated instead of the
+# caller waiting for the full text (and, previously, both TTS clips) before
+# seeing anything. Same StreamingResponse/NDJSON convention already used
+# elsewhere in this file for plugin installs and model pulls.
 @app.post("/api/voice/respond")
 async def voice_respond(req: VoiceTranscriptRequest):
     transcript = req.transcript.strip()
@@ -225,57 +289,87 @@ async def voice_respond(req: VoiceTranscriptRequest):
 
     log.info(f"Voice transcript: {transcript[:80]}")
 
-    from voice.text_to_speech import speak_to_file
-
     import asyncio
-    loop = asyncio.get_event_loop()
+    import queue
+    import threading
 
-    # Acknowledgment audio (short phrase, plays while AI thinks)
+    want_audio = req.want_audio
     ack_phrase = random.choice(ACK_PHRASES)
+    q: "queue.Queue" = queue.Queue()
 
-    def _gen_ack() -> str | None:
-        try:
-            ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
-            result   = speak_to_file(ack_phrase, ack_path)
-            if result and result.exists():
-                return f"/voice-audio/{result.name}"
-        except Exception as exc:
-            log.warning(f"ACK TTS failed: {exc}")
-        return None
+    def _run_ack():
+        ack_url = None
+        if want_audio:
+            try:
+                from voice.text_to_speech import speak_to_file
+                ack_path = VOICE_OUTPUTS / f"nyx_ack_{uuid.uuid4().hex[:8]}.mp3"
+                result = speak_to_file(ack_phrase, ack_path)
+                if result and result.exists():
+                    ack_url = f"/voice-audio/{result.name}"
+            except Exception as exc:
+                log.warning(f"ACK TTS failed: {exc}")
+        q.put({"type": "ack", "phrase": ack_phrase, "audio_url": ack_url})
 
-    # The ack TTS and the AI reply don't depend on each other — run both off
-    # the event loop (they make blocking network calls that would otherwise
-    # freeze every other request) and at the same time, instead of paying for
-    # them back-to-back.
-    ack_url, response_text = await asyncio.gather(
-        loop.run_in_executor(None, _gen_ack),
-        loop.run_in_executor(None, agent.handle, transcript),
-    )
+    chunks_emitted = {"count": 0}
 
-    # Generate response TTS — also off the event loop
-    def _gen_response_tts() -> str | None:
-        try:
-            resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
-            result    = speak_to_file(response_text, resp_path)
-            if result and result.exists():
-                return f"/voice-audio/{result.name}"
-        except Exception as exc:
-            log.warning(f"TTS generation failed: {exc}")
-        return None
+    def _on_chunk(text: str):
+        chunks_emitted["count"] += 1
+        q.put({"type": "chunk", "text": text})
 
-    audio_url = await loop.run_in_executor(None, _gen_response_tts)
+    def _run_agent():
+        response_text = agent.handle(transcript, on_chunk=_on_chunk)
+        if chunks_emitted["count"] == 0 and response_text:
+            # A fast tool/keyword branch answered without ever calling
+            # on_chunk (they already return instantly, nothing to stream) —
+            # still emit it as one chunk so the frontend sees it the same way.
+            q.put({"type": "chunk", "text": response_text})
+        q.put(("__DONE__", response_text))
 
-    payload = {
-        "transcript":    transcript,
-        "response":      response_text,
-        "audio_url":     audio_url,
-        "ack_phrase":    ack_phrase,
-        "ack_audio_url": ack_url,
-        "timestamp":     datetime.now().isoformat(),
-    }
+    threading.Thread(target=_run_ack, daemon=True).start()
+    threading.Thread(target=_run_agent, daemon=True).start()
 
-    await voice_ws.broadcast({"type": "voice_response", **payload})
-    return payload
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        response_text = ""
+        ack_url = None
+        while True:
+            item = await loop.run_in_executor(None, q.get)
+            if isinstance(item, tuple) and item[0] == "__DONE__":
+                response_text = item[1]
+                break
+            if item.get("type") == "ack":
+                ack_url = item.get("audio_url")
+            yield json.dumps(item) + "\n"
+
+        # Response TTS — off the event loop, and skipped entirely when the
+        # client doesn't want audio (previously this ran unconditionally and
+        # the frontend just silently threw the clip away unplayed).
+        audio_url = None
+        if want_audio:
+            def _gen_response_tts() -> str | None:
+                try:
+                    from voice.text_to_speech import speak_to_file
+                    resp_path = VOICE_OUTPUTS / f"nyx_{uuid.uuid4().hex[:10]}.mp3"
+                    result = speak_to_file(response_text, resp_path)
+                    if result and result.exists():
+                        return f"/voice-audio/{result.name}"
+                except Exception as exc:
+                    log.warning(f"TTS generation failed: {exc}")
+                return None
+            audio_url = await loop.run_in_executor(None, _gen_response_tts)
+
+        done_payload = {
+            "transcript":    transcript,
+            "response":      response_text,
+            "audio_url":     audio_url,
+            "ack_phrase":    ack_phrase,
+            "ack_audio_url": ack_url,
+            "timestamp":     datetime.now().isoformat(),
+        }
+        await voice_ws.broadcast({"type": "voice_response", **done_payload})
+        yield json.dumps({"type": "done", **done_payload}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 # ── Voice: Python background listener notifies wake word ──────────
@@ -524,6 +618,14 @@ async def add_memory(req: MemoryNode):
         importance=req.importance,
         tags=req.tags,
     )
+    # Real category assignment right away — otherwise this node has no
+    # multi-label categories until the next manual "Categorize Memories"
+    # pass, which left its category region's bubble/count out of sync
+    # with a node that visually already existed in that region.
+    import asyncio
+    from core import category_manager
+    await asyncio.get_event_loop().run_in_executor(None, category_manager.categorize_new_node, node)
+
     # Mirror to the active storage provider's vault
     try:
         from core.vault_bridge import get_memory_dir
@@ -561,8 +663,12 @@ async def delete_memory(node_id: str):
 
 @app.post("/api/constellation/sync")
 async def sync_constellation():
+    import asyncio
     from core.memory_extractor import scan_conversation_logs
-    new_nodes = scan_conversation_logs()
+    # Off the event loop — each newly-found memory now also gets a real
+    # embedding call for auto-categorization, so this can take a while on
+    # a large sync; blocking every other request behind it would be worse.
+    new_nodes = await asyncio.get_event_loop().run_in_executor(None, scan_conversation_logs)
     return {
         "status":      "synced",
         "new_memories": len(new_nodes),
@@ -573,6 +679,201 @@ async def sync_constellation():
 @app.get("/api/constellation/export")
 async def export_constellation():
     return constellation.get_export()
+
+
+# ── Categories & Relationships ───────────────────────────────────────────────
+
+class ManualCategoryRequest(BaseModel):
+    category_id: str
+    add: bool = True
+
+
+class SetPrimaryCategoryRequest(BaseModel):
+    category_id: str
+
+
+class CategoryColorRequest(BaseModel):
+    color: str
+
+
+class RenameCategoryRequest(BaseModel):
+    name: str
+
+
+class MergeCategoryRequest(BaseModel):
+    into_id: str
+
+
+class EdgeConfirmRequest(BaseModel):
+    confirmed: bool
+
+
+@app.get("/api/constellation/categories")
+async def get_categories():
+    from core import category_manager
+    return {"categories": category_manager.get_taxonomy()}
+
+
+@app.get("/api/constellation/nodes/{node_id}/categories")
+async def get_node_categories(node_id: str):
+    from core import category_manager
+    return {"node_id": node_id, "categories": category_manager.get_node_categories(node_id)}
+
+
+@app.get("/api/constellation/node-categories")
+async def get_all_node_categories():
+    """Batch fetch — every node's category assignments in one call, so the
+    3D Constellation can cluster by category without an N+1 request per
+    node on every load."""
+    from core import category_manager
+    return {"assignments": category_manager._load_assignments()}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories")
+async def set_node_category(node_id: str, req: ManualCategoryRequest):
+    """add=True adds/promotes req.category_id as a secondary label;
+    add=False removes it. Use the dedicated /primary route to change which
+    category controls the node's color."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    try:
+        if req.add:
+            cats = category_manager.add_secondary_category(node_id, req.category_id)
+        else:
+            cats = category_manager.remove_category(node_id, req.category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/primary")
+async def set_node_primary_category(node_id: str, req: SetPrimaryCategoryRequest):
+    """Explicit manual primary — never overwritten by a later automatic
+    categorization pass."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    try:
+        cats = category_manager.set_primary_category(node_id, req.category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/{category_id}/confirm")
+async def confirm_node_category(node_id: str, category_id: str):
+    """User confirms an automatic suggestion — converts it to manual."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    cats = category_manager.confirm_category(node_id, category_id)
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.post("/api/constellation/nodes/{node_id}/categories/{category_id}/reject")
+async def reject_node_category(node_id: str, category_id: str):
+    """User rejects an automatic suggestion — removed outright."""
+    from core import category_manager
+    if not constellation.find_by_id(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    cats = category_manager.reject_category(node_id, category_id)
+    return {"node_id": node_id, "categories": cats}
+
+
+@app.get("/api/constellation/category-counts")
+async def get_category_counts():
+    """Real per-category node counts — drives which category regions the
+    3D scene actually renders (only categories with >=1 real node)."""
+    from core import category_manager
+    return {"counts": category_manager.category_counts()}
+
+
+@app.post("/api/constellation/categories/{category_id}/rename")
+async def rename_category_route(category_id: str, req: RenameCategoryRequest):
+    from core import category_manager
+    try:
+        cat = category_manager.rename_category(category_id, req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/color")
+async def set_category_color_route(category_id: str, req: CategoryColorRequest):
+    from core import category_manager
+    try:
+        cat = category_manager.set_category_color(category_id, req.color)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/color/restore")
+async def restore_category_color_route(category_id: str):
+    from core import category_manager
+    try:
+        cat = category_manager.restore_category_color(category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cat
+
+
+@app.post("/api/constellation/categories/{category_id}/merge")
+async def merge_category_route(category_id: str, req: MergeCategoryRequest):
+    from core import category_manager
+    try:
+        result = category_manager.merge_categories(category_id, req.into_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.post("/api/constellation/categorize")
+async def categorize_all():
+    """Real backend job — re-runs automatic multi-label categorization for
+    every node, off the event loop since embedding calls are blocking."""
+    import asyncio
+    from core import category_manager
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, category_manager.reassign_all)
+    return result
+
+
+@app.post("/api/constellation/discover-relationships")
+async def discover_relationships():
+    """Real backend job — computes evidence-backed related_to/duplicate_of
+    edges from actual embedding similarity, off the event loop."""
+    import asyncio
+    from core import relationship_manager
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, relationship_manager.discover_relationships)
+    return result
+
+
+@app.post("/api/constellation/edges/{edge_id}/confirm")
+async def confirm_edge(edge_id: str, req: EdgeConfirmRequest):
+    edge = constellation.confirm_edge(edge_id, req.confirmed)
+    if not edge:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    return edge
+
+
+@app.get("/api/constellation/search")
+async def search_constellation(q: str, limit: int = 10):
+    """Real semantic search over vault chunks + Constellation nodes —
+    core/memory_rag.semantic_search(). Not keyword matching: this embeds
+    the query and ranks by cosine similarity, same pipeline that actually
+    feeds chat retrieval. Empty/whitespace queries are rejected rather than
+    returning an arbitrary top-N with no query behind it."""
+    import asyncio
+    q = q.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Query must not be empty")
+    limit = max(1, min(limit, 50))
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, memory_rag.semantic_search, q, limit)
+    return result
 
 
 @app.post("/api/constellation/open-vault")
@@ -1005,12 +1306,13 @@ async def update_task(task_id: str, req: TaskUpdateRequest):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if updates.get("status") == "COMPLETE":
-        event_log.log_event("tasks", f"Task complete: {task['name']}")
-        from tools.system.notifications import notify
+        from core import proactive
         import asyncio
         # Fire-and-forget off the event loop — win11toast blocks until the
         # toast is dismissed, and the API response shouldn't wait on that.
-        asyncio.get_event_loop().run_in_executor(None, notify, "Task Complete", task["name"], "task_complete")
+        # fire() does its own event_log.log_event, replacing the old
+        # separate call here.
+        asyncio.get_event_loop().run_in_executor(None, proactive.fire, "tasks", "Task Complete", task["name"])
     return task
 
 
@@ -1020,6 +1322,23 @@ async def delete_task(task_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"status": "deleted"}
+
+
+class AiTaskCompleteRequest(BaseModel):
+    title: str
+    ok: bool = True
+
+
+@app.post("/api/tasks/ai-task-complete")
+async def ai_task_complete(req: AiTaskCompleteRequest):
+    """The Tasks page's 'AI Task' queue (TasksPage.jsx) is a frontend-only
+    state machine — it calls /api/chat directly and marks itself done
+    purely in browser memory, so it never otherwise touches the backend at
+    all. This is its one hook into the proactive-notification pipeline."""
+    import asyncio
+    title = "AI Task Complete" if req.ok else "AI Task Failed"
+    asyncio.get_event_loop().run_in_executor(None, proactive.fire, "tasks", title, req.title)
+    return {"status": "ok"}
 
 
 # ── Reminders ────────────────────────────────────────────────────────────────
@@ -1202,6 +1521,461 @@ async def music_playlist_banner(playlist_id: str):
     return FileResponse(path, media_type=music_store.banner_media_type(playlist_id))
 
 
+# ── Audiobooks (The Forge) ───────────────────────────────────────────────────
+
+class BookUpdateRequest(BaseModel):
+    title: str | None = None
+    author: str | None = None
+    favorite: bool | None = None
+    voice_id: str | None = None
+    voice_blend_id: str | None = None
+
+
+class PositionUpdateRequest(BaseModel):
+    position_seconds: float
+    chapter_index: int
+
+
+@app.get("/api/audiobooks/library")
+async def audiobooks_library():
+    return {
+        "books": audiobook_store.list_books(),
+        "collections": audiobook_store.list_collections(),
+        "allowed_formats": sorted(audiobook_store.ALLOWED_AUDIO_EXTS),
+        "max_file_mb": audiobook_store.MAX_FILE_MB,
+    }
+
+
+@app.post("/api/audiobooks/upload")
+async def audiobooks_upload(files: list[UploadFile]):
+    # Each uploaded file becomes its own single-chapter book — matches how
+    # Music treats each file as one track. Multi-file "one book, many
+    # chapters" uploads are a later addition (grouping UI in the IMPORT tab).
+    added, errors = [], []
+    for f in files:
+        try:
+            content = await f.read()
+            stem = Path(f.filename or "unknown").stem
+            book = audiobook_store.create_book_shell(
+                title=stem, source_type="uploaded_audio", source_format="audio")
+            book = audiobook_store.add_uploaded_chapter(book["id"], f.filename or "unknown", content)
+            added.append(book)
+        except ValueError as e:
+            errors.append({"file": f.filename, "error": str(e)})
+        except Exception as e:
+            log.error(f"[audiobooks] Upload failed for {f.filename}: {e}")
+            errors.append({"file": f.filename, "error": "Upload failed."})
+    if added:
+        event_log.log_event("audiobooks", f"Added {len(added)} book{'s' if len(added) != 1 else ''}",
+                            ", ".join(b["title"] for b in added[:5]))
+    return {"added": added, "errors": errors}
+
+
+@app.get("/api/audiobooks/file/{book_id}/{chapter_index}")
+async def audiobooks_file(book_id: str, chapter_index: int):
+    book = audiobook_store.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if chapter_index < 0 or chapter_index >= len(book["chapters"]):
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    chapter = book["chapters"][chapter_index]
+    if not chapter.get("filename"):
+        raise HTTPException(status_code=404, detail="Chapter audio not generated yet")
+    path = audiobook_store.chapter_path(book, chapter_index)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio file missing on disk")
+    # FileResponse handles Range requests → seeking works in the player
+    return FileResponse(path, media_type=book["media_type"] or "audio/mpeg")
+
+
+@app.put("/api/audiobooks/book/{book_id}")
+async def audiobooks_update(book_id: str, req: BookUpdateRequest):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    book = audiobook_store.update_book(book_id, updates)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return book
+
+
+@app.delete("/api/audiobooks/book/{book_id}")
+async def audiobooks_delete(book_id: str):
+    if not audiobook_store.delete_book(book_id):
+        raise HTTPException(status_code=404, detail="Book not found")
+    return {"status": "deleted"}
+
+
+@app.put("/api/audiobooks/book/{book_id}/position")
+async def audiobooks_update_position(book_id: str, req: PositionUpdateRequest):
+    book = audiobook_store.update_position(book_id, req.position_seconds, req.chapter_index)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return book
+
+
+@app.post("/api/audiobooks/book/{book_id}/cover")
+async def audiobooks_set_cover(book_id: str, file: UploadFile):
+    try:
+        content = await file.read()
+        book = audiobook_store.set_book_cover(book_id, file.filename or "cover.jpg", content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return book
+
+
+@app.delete("/api/audiobooks/book/{book_id}/cover")
+async def audiobooks_clear_cover(book_id: str):
+    book = audiobook_store.clear_book_cover(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return book
+
+
+@app.get("/api/audiobooks/cover/{book_id}")
+async def audiobooks_cover(book_id: str):
+    path = audiobook_store.book_cover_path(book_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No custom cover")
+    return FileResponse(path, media_type=audiobook_store.book_cover_media_type(book_id))
+
+
+class CollectionCreateRequest(BaseModel):
+    name: str
+    book_ids: list[str] = []
+
+
+class CollectionRenameRequest(BaseModel):
+    name: str
+
+
+class CollectionBookRequest(BaseModel):
+    book_id: str
+
+
+@app.post("/api/audiobooks/collections")
+async def audiobooks_collection_create(req: CollectionCreateRequest):
+    collection = audiobook_store.create_collection(req.name, req.book_ids)
+    event_log.log_event("audiobooks", f"Collection created: {collection['name']}")
+    return collection
+
+
+@app.delete("/api/audiobooks/collections/{collection_id}")
+async def audiobooks_collection_delete(collection_id: str):
+    if not audiobook_store.delete_collection(collection_id):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return {"status": "deleted"}
+
+
+@app.put("/api/audiobooks/collections/{collection_id}")
+async def audiobooks_collection_rename(collection_id: str, req: CollectionRenameRequest):
+    c = audiobook_store.rename_collection(collection_id, req.name)
+    if not c:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return c
+
+
+@app.post("/api/audiobooks/collections/{collection_id}/books")
+async def audiobooks_collection_add_book(collection_id: str, req: CollectionBookRequest):
+    c = audiobook_store.add_to_collection(collection_id, req.book_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return c
+
+
+@app.delete("/api/audiobooks/collections/{collection_id}/books/{book_id}")
+async def audiobooks_collection_remove_book(collection_id: str, book_id: str):
+    c = audiobook_store.remove_from_collection(collection_id, book_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return c
+
+
+@app.post("/api/audiobooks/collections/{collection_id}/banner")
+async def audiobooks_collection_set_banner(collection_id: str, file: UploadFile):
+    try:
+        content = await file.read()
+        c = audiobook_store.set_collection_banner(collection_id, file.filename or "banner.jpg", content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return c
+
+
+@app.delete("/api/audiobooks/collections/{collection_id}/banner")
+async def audiobooks_collection_clear_banner(collection_id: str):
+    c = audiobook_store.clear_collection_banner(collection_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return c
+
+
+@app.get("/api/audiobooks/collections/{collection_id}/banner")
+async def audiobooks_collection_banner(collection_id: str):
+    path = audiobook_store.collection_banner_path(collection_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No custom banner")
+    return FileResponse(path, media_type=audiobook_store.collection_banner_media_type(collection_id))
+
+
+class VoiceBlendCreateRequest(BaseModel):
+    name: str
+    components: list[dict]  # [{"voice": str, "weight": float}, ...]
+
+
+class VoicePreviewAdhocRequest(BaseModel):
+    components: list[dict]
+
+
+@app.get("/api/audiobooks/voices")
+async def audiobooks_voices():
+    return {
+        "builtin": tts_engine.list_builtin_voices(),
+        "blends": audiobook_store.list_voice_blends(),
+        "models_ready": tts_engine.models_ready(),
+    }
+
+
+@app.post("/api/audiobooks/voices/blend")
+async def audiobooks_voice_blend_create(req: VoiceBlendCreateRequest):
+    try:
+        blend = audiobook_store.create_voice_blend(req.name, req.components)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    event_log.log_event("audiobooks", f"Voice blend created: {blend['name']}")
+    return blend
+
+
+@app.delete("/api/audiobooks/voices/blend/{blend_id}")
+async def audiobooks_voice_blend_delete(blend_id: str):
+    if not audiobook_store.delete_voice_blend(blend_id):
+        raise HTTPException(status_code=404, detail="Voice blend not found")
+    return {"status": "deleted"}
+
+
+@app.get("/api/audiobooks/voices/preview/{voice_or_blend_id}")
+async def audiobooks_voice_preview(voice_or_blend_id: str, is_blend: bool = False):
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        if not tts_engine.models_ready():
+            await loop.run_in_executor(None, tts_engine.ensure_models)
+        if is_blend:
+            path = await loop.run_in_executor(None, tts_engine.preview_path, None, voice_or_blend_id)
+        else:
+            path = await loop.run_in_executor(None, tts_engine.preview_path, voice_or_blend_id, None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/api/audiobooks/voices/preview-adhoc")
+async def audiobooks_voice_preview_adhoc(req: VoicePreviewAdhocRequest):
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        if not tts_engine.models_ready():
+            await loop.run_in_executor(None, tts_engine.ensure_models)
+        path = await loop.run_in_executor(None, tts_engine.preview_adhoc, req.components)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return FileResponse(path, media_type="audio/wav")
+
+
+class TextImportRequest(BaseModel):
+    title: str
+    author: str = ""
+    text: str
+
+
+@app.post("/api/audiobooks/import-file")
+async def audiobooks_import_file(file: UploadFile, title: str = Form(None), author: str = Form("")):
+    """EPUB/PDF → a text_generated book shell with extracted (but not yet
+    narrated) chapters. Parsing runs off the event loop since lxml/pymupdf
+    work is CPU-bound and can be slow on a large file."""
+    import asyncio
+    import uuid as _uuid
+
+    ext = Path(file.filename or "").suffix.lower().lstrip(".")
+    if ext not in ("epub", "pdf"):
+        raise HTTPException(status_code=400, detail="Only EPUB and PDF files are supported here — use /import for plain text.")
+
+    content = await file.read()
+    audiobook_store.SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    source_filename = f"{_uuid.uuid4().hex[:12]}.{ext}"
+    source_path = audiobook_store.SOURCES_DIR / source_filename
+    source_path.write_bytes(content)
+
+    book_title = (title or "").strip() or Path(file.filename or source_filename).stem
+
+    loop = asyncio.get_event_loop()
+    try:
+        chapters = await loop.run_in_executor(None, ebook_text.extract_chapters, source_path, ext, book_title)
+    except Exception as e:
+        source_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Couldn't extract text from that file: {e}")
+
+    if not chapters:
+        source_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="No extractable text found in that file.")
+
+    warning = None
+    if ext == "pdf":
+        try:
+            page_count = await loop.run_in_executor(None, ebook_text.pdf_page_count, source_path)
+            warning = ebook_text.extraction_warning(chapters, page_count)
+        except Exception:
+            pass
+
+    book = audiobook_store.create_book_shell(
+        title=book_title, author=author, source_type="text_generated",
+        source_format=ext, source_filename=source_filename)
+    for ch in chapters:
+        book = audiobook_store.add_text_chapter(book["id"], ch["title"], ch["text"])
+
+    event_log.log_event("audiobooks", f"Imported {book_title}", f"{len(chapters)} chapter(s) from {ext.upper()}")
+    return {"book": book, "warning": warning}
+
+
+@app.post("/api/audiobooks/import")
+async def audiobooks_import_text(req: TextImportRequest):
+    """Plain pasted/typed text → a single-chapter text_generated book shell.
+    No chapter concept exists for raw text, so it isn't invented here."""
+    chapters = ebook_text.extract_plain_text(req.text, title_hint=req.title)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No text provided.")
+    book = audiobook_store.create_book_shell(
+        title=req.title, author=req.author, source_type="text_generated", source_format="txt")
+    for ch in chapters:
+        book = audiobook_store.add_text_chapter(book["id"], ch["title"], ch["text"])
+    event_log.log_event("audiobooks", f"Imported {req.title}", "from typed/pasted text")
+    return {"book": book, "warning": None}
+
+
+class GenerateRequest(BaseModel):
+    voice_id: str | None = None
+    voice_blend_id: str | None = None
+    chapter_indices: list[int] | None = None
+
+
+# Generation jobs run one at a time — ONNX Runtime's thread-safety under
+# concurrent inference from one shared Kokoro instance isn't guaranteed, so
+# a second job triggered while one is running simply waits its turn here
+# rather than racing it.
+_generation_lock = None
+
+
+async def _run_generation_job(job_id: str, book_id: str, voice_id: str | None,
+                               voice_blend_id: str | None, chapter_indices: list[int] | None):
+    import asyncio
+    global _generation_lock
+    if _generation_lock is None:
+        _generation_lock = asyncio.Lock()
+
+    loop = asyncio.get_event_loop()
+    async with _generation_lock:
+        try:
+            audiobook_store.update_job(job_id, {"status": "IN_PROGRESS"})
+
+            if not tts_engine.models_ready():
+                await voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id,
+                                           "phase": "downloading_model", "pct": 0})
+
+                def _dl_progress(done, total):
+                    if total:
+                        asyncio.run_coroutine_threadsafe(
+                            voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id,
+                                                 "phase": "downloading_model", "pct": int(done / total * 100)}),
+                            loop)
+
+                await loop.run_in_executor(None, tts_engine.ensure_models, _dl_progress)
+                await voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id,
+                                           "phase": "downloading_model", "pct": 100})
+
+            book = audiobook_store.get_book(book_id)
+            if not book:
+                raise RuntimeError("Book was deleted before generation started.")
+            targets = chapter_indices or [c["index"] for c in book["chapters"] if c["status"] != "done"]
+
+            for i, chapter_index in enumerate(targets):
+                job = audiobook_store.get_job(job_id)
+                if job and job["status"] == "CANCELLED":
+                    break
+
+                audiobook_store.set_chapter_status(book_id, chapter_index, "generating")
+                await voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id, "phase": "synthesizing",
+                                           "chapter_index": chapter_index, "pct": int(i / max(1, len(targets)) * 100)})
+
+                chapter_text = book["chapters"][chapter_index].get("text")
+                if not chapter_text:
+                    audiobook_store.set_chapter_status(book_id, chapter_index, "failed", error="No text to synthesize.")
+                    continue
+
+                out_filename = f"{book_id}_ch{chapter_index:03d}.wav"
+                out_path = audiobook_store.LIBRARY_DIR / out_filename
+                try:
+                    duration = await loop.run_in_executor(
+                        None, tts_engine.synthesize_to_file, chapter_text, voice_id, voice_blend_id, out_path)
+                    audiobook_store.set_chapter_result(book_id, chapter_index, out_filename, duration)
+                except Exception as e:
+                    log.error(f"[audiobooks] Chapter {chapter_index} synthesis failed: {e}")
+                    audiobook_store.set_chapter_status(book_id, chapter_index, "failed", error=str(e))
+
+                audiobook_store.update_job(job_id, {"current_chapter": chapter_index,
+                                                      "pct": int((i + 1) / max(1, len(targets)) * 100)})
+
+            job = audiobook_store.get_job(job_id)
+            final_status = "CANCELLED" if job and job["status"] == "CANCELLED" else "COMPLETE"
+            audiobook_store.update_job(job_id, {"status": final_status, "pct": 100})
+            await voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id,
+                                       "phase": "done" if final_status == "COMPLETE" else "cancelled", "pct": 100})
+            if final_status == "COMPLETE":
+                await loop.run_in_executor(
+                    None, proactive.fire, "audiobooks", "Narration finished",
+                    f'"{book["title"]}" is ready to listen to.')
+        except Exception as e:
+            log.error(f"[audiobooks] Generation job {job_id} failed: {e}")
+            audiobook_store.update_job(job_id, {"status": "FAILED", "error": str(e)})
+            await voice_ws.broadcast({"type": "audiobook_progress", "job_id": job_id, "book_id": book_id, "phase": "failed", "error": str(e)})
+            book = audiobook_store.get_book(book_id)
+            book_title = book["title"] if book else "your audiobook"
+            await loop.run_in_executor(
+                None, proactive.fire, "audiobooks", "Narration failed",
+                f'Something went wrong generating "{book_title}" — check the In Progress tab.')
+
+
+@app.post("/api/audiobooks/{book_id}/generate")
+async def audiobooks_generate(book_id: str, req: GenerateRequest):
+    import asyncio
+    book = audiobook_store.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if not req.voice_id and not req.voice_blend_id:
+        raise HTTPException(status_code=400, detail="A voice_id or voice_blend_id is required.")
+    targets = req.chapter_indices or [c["index"] for c in book["chapters"] if c["status"] != "done"]
+    if not targets:
+        raise HTTPException(status_code=400, detail="Nothing to generate — all chapters are already done.")
+
+    audiobook_store.update_book(book_id, {"voice_id": req.voice_id, "voice_blend_id": req.voice_blend_id})
+    job = audiobook_store.create_job(book_id, len(targets))
+    asyncio.get_event_loop().create_task(
+        _run_generation_job(job["id"], book_id, req.voice_id, req.voice_blend_id, req.chapter_indices))
+    event_log.log_event("audiobooks", f"Generation started: {book['title']}", f"{len(targets)} chapter(s)")
+    return {"job_id": job["id"]}
+
+
+@app.get("/api/audiobooks/jobs/{job_id}")
+async def audiobooks_job_status(job_id: str):
+    job = audiobook_store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/audiobooks/jobs/{job_id}/cancel")
+async def audiobooks_job_cancel(job_id: str):
+    job = audiobook_store.update_job(job_id, {"status": "CANCELLED"})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
 # ── Agents (The Forge → Agents) ──────────────────────────────────────────────
 
 class AgentCreateRequest(BaseModel):
@@ -1263,6 +2037,114 @@ async def agents_task(agent_id: str, req: AgentTaskRequest):
         raise HTTPException(status_code=400, detail=result.get("error", "Task failed"))
     event_log.log_event("agents", f"Task run by {agent_id}", req.task[:80])
     return result
+
+
+# ── Workers (Agents dashboard) ───────────────────────────────────────────────
+# Distinct namespace from /api/agents above on purpose — agents_store.py is a
+# separate, older system (user-created OpenClaw task-agents). This backs the
+# real specialized workers: Momus, Hemera, Analyst, OpenClaw. Local-only
+# surface — no auth layer exists anywhere else in Nyx either, so this matches
+# the app's existing single-user security model rather than inventing a new
+# one; nothing about it is reachable from Sagefall-sentinel (a separate app)
+# or any other public-facing route.
+
+class WorkerKeyRequest(BaseModel):
+    provider: str
+    key: str
+
+
+class WorkerPriorityRequest(BaseModel):
+    order: list[str]
+
+
+def _require_agent(agent_id: str) -> dict:
+    meta = agent_registry.AGENTS.get(agent_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+    return meta
+
+
+def _require_provider(meta: dict, provider_id: str) -> None:
+    if provider_id not in meta["providers"]:
+        raise HTTPException(status_code=400, detail=f"'{provider_id}' isn't a provider this agent supports")
+
+
+@app.get("/api/workers")
+async def workers_list():
+    return {"workers": agent_registry.list_agents()}
+
+
+@app.get("/api/workers/{agent_id}")
+async def workers_get(agent_id: str):
+    _require_agent(agent_id)
+    return agent_registry.get_agent(agent_id)
+
+
+@app.post("/api/workers/{agent_id}/providers/key")
+async def workers_set_key(agent_id: str, req: WorkerKeyRequest):
+    meta = _require_agent(agent_id)
+    _require_provider(meta, req.provider)
+    if not meta["providers"][req.provider]["requires_key"]:
+        raise HTTPException(status_code=400, detail=f"'{req.provider}' doesn't use an API key")
+    message = api_credentials.set_key(req.provider, req.key)
+    if message.startswith("[Nyx] Saved"):
+        return {"ok": True, "message": message, "worker": agent_registry.get_agent(agent_id)}
+    raise HTTPException(status_code=400, detail=message)
+
+
+@app.delete("/api/workers/{agent_id}/providers/{provider_id}/key")
+async def workers_remove_key(agent_id: str, provider_id: str):
+    meta = _require_agent(agent_id)
+    _require_provider(meta, provider_id)
+    message = api_credentials.remove_key(provider_id)
+    return {"ok": True, "message": message, "worker": agent_registry.get_agent(agent_id)}
+
+
+@app.post("/api/workers/{agent_id}/priority")
+async def workers_set_priority(agent_id: str, req: WorkerPriorityRequest):
+    meta = _require_agent(agent_id)
+    for p in req.order:
+        _require_provider(meta, p)
+    # Every provider this agent supports must stay reachable — a reorder
+    # can't silently drop one, only change the sequence.
+    if set(req.order) != set(meta["providers"]):
+        raise HTTPException(status_code=400, detail="Order must include every provider this agent supports")
+    provider_router.set_priority(agent_id, req.order)
+    event_log.log_event("workers", f"{meta['name']} provider priority changed", " → ".join(req.order))
+    return {"ok": True, "worker": agent_registry.get_agent(agent_id)}
+
+
+@app.post("/api/workers/{agent_id}/providers/{provider_id}/test")
+async def workers_test_provider(agent_id: str, provider_id: str):
+    import asyncio
+    meta = _require_agent(agent_id)
+    _require_provider(meta, provider_id)
+    loop = asyncio.get_event_loop()
+
+    if provider_id == "tavily":
+        if not api_credentials.is_configured("tavily"):
+            return {"ok": False, "message": "No Tavily key configured."}
+        try:
+            from tools.web.search import _search_tavily
+            results = await loop.run_in_executor(None, _search_tavily, "connection test", 1)
+            provider_router.mark_success("tavily")
+            event_log.log_event("workers", f"{meta['name']}: Tavily test succeeded")
+            return {"ok": True, "message": f"Tavily responded ({len(results)} result(s))."}
+        except Exception as e:
+            provider_router.mark_failure("tavily")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            reason = f"HTTP {status}" if status else "connection error"
+            event_log.log_event("workers", f"{meta['name']}: Tavily test failed", reason)
+            return {"ok": False, "message": f"Tavily test failed ({reason})."}
+
+    if provider_id == "ddg":
+        return {"ok": True, "message": "DuckDuckGo needs no key and is always available."}
+
+    if provider_id == "local":
+        up = await loop.run_in_executor(None, model_manager.is_ollama_running)
+        return {"ok": up, "message": "Ollama is reachable." if up else "Ollama is not reachable — is it running?"}
+
+    return {"ok": False, "message": "No connection test available for this provider."}
 
 
 # ── Plugins (SageTech MarketPlace) ───────────────────────────────────────────
