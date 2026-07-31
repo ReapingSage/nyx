@@ -11,6 +11,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_URL } from '../utils/constants.js'
+import { sendVoiceRespondStreaming } from '../services/api.js'
 
 // Any transcript containing these strings triggers wake — kept broad so quiet/slurred speech still works
 const WAKE_WORDS = [
@@ -50,7 +51,7 @@ export const VOICE_STATUS = {
   ERROR:         'ERROR',
 }
 
-export function useVoice({ onMessage, onOrbState }) {
+export function useVoice({ onMessage, onMessageChunk, onError, onOrbState, onProactive }) {
   const [status,          setStatus]          = useState(VOICE_STATUS.IDLE)
   const [wakeMode,        setWakeMode]        = useState(true)   // on by default
   const [textOnly,        setTextOnly]        = useState(false)
@@ -63,6 +64,7 @@ export function useVoice({ onMessage, onOrbState }) {
   const recognRef          = useRef(null)
   const audioRef           = useRef(null)
   const ackAudioRef        = useRef(null)
+  const ackPlayingRef      = useRef(false)
   const userMediaRef       = useRef(null)   // held open so Chrome uses the right mic
   const selectedDeviceRef  = useRef(null)   // deviceId string
 
@@ -142,6 +144,21 @@ export function useVoice({ onMessage, onOrbState }) {
             if (d.type === 'wake_word_detected' && phaseRef.current !== 'recording') {
               onWakeDetectedRef.current?.()
             }
+            if (d.type === 'proactive_notification') {
+              // Nyx telling you something unprompted — not part of any
+              // request/response cycle, so this doesn't touch phaseRef or
+              // the status machine handleTranscript drives.
+              onProactive?.(d)
+              onOrbState('alert')
+              if (d.audio_url && !textOnlyRef.current) {
+                const audio = new Audio(`${API_URL}${d.audio_url}`)
+                audio.onended = () => onOrbState('idle')
+                audio.onerror = () => onOrbState('idle')
+                audio.play().catch(() => onOrbState('idle'))
+              } else {
+                setTimeout(() => onOrbState('idle'), 3000)
+              }
+            }
           } catch {}
         }
         ws.onerror = () => {}
@@ -166,16 +183,45 @@ export function useVoice({ onMessage, onOrbState }) {
       setTextOnly(false); textOnlyRef.current = false
     }
 
-    try {
-      const res = await fetch(`${API_URL}/api/voice/respond`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ transcript }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
+    // Same message id patched in place as chunks arrive, instead of one
+    // message object created only once the full reply is ready.
+    const messageId = Date.now() + Math.random()
+    let fullText = ''
+    let gotAnyChunk = false
 
-      onMessage({ role: 'nyx', text: data.response })
+    try {
+      let doneData = null
+
+      await sendVoiceRespondStreaming(transcript, !textOnlyRef.current, (evt) => {
+        if (evt.type === 'chunk') {
+          gotAnyChunk = true
+          fullText += evt.text
+          onMessageChunk?.(messageId, fullText)
+        } else if (evt.type === 'ack') {
+          if (!textOnlyRef.current && evt.audio_url) {
+            setStatus(VOICE_STATUS.SPEAKING)
+            onOrbState('speaking')
+            const ack = new Audio(`${API_URL}${evt.audio_url}`)
+            ackAudioRef.current = ack
+            ackPlayingRef.current = true
+            ack.onended = () => { ackPlayingRef.current = false }
+            ack.onerror = () => { ackPlayingRef.current = false }
+            ack.play().catch(() => { ackPlayingRef.current = false })
+          }
+        } else if (evt.type === 'done') {
+          doneData = evt
+        }
+      })
+
+      // Fallback for callers with no onMessageChunk wired up (or a reply
+      // that somehow streamed nothing) — behave like the old one-shot API.
+      if (!gotAnyChunk && doneData) {
+        onMessage({ role: 'nyx', text: doneData.response })
+      } else if (!onMessageChunk) {
+        onMessage({ role: 'nyx', text: fullText })
+      }
+
+      const data = doneData || { response: fullText, audio_url: null }
 
       const afterAll = () => {
         const inWake = wakeModeRef.current
@@ -204,15 +250,15 @@ export function useVoice({ onMessage, onOrbState }) {
         }
       }
 
-      if (!textOnlyRef.current && (data.ack_audio_url || data.audio_url)) {
+      if (!textOnlyRef.current && data.audio_url) {
         setStatus(VOICE_STATUS.SPEAKING)
         onOrbState('speaking')
-        if (data.ack_audio_url) {
-          const ack = new Audio(`${API_URL}${data.ack_audio_url}`)
-          ackAudioRef.current = ack
-          ack.onended = playResponse
-          ack.onerror = playResponse
-          ack.play().catch(playResponse)
+        // Don't talk over the ack phrase if it's somehow still playing
+        // (only realistic for very fast fast-path replies) — let it finish
+        // first, same ordering the old non-streaming flow always had.
+        if (ackPlayingRef.current && ackAudioRef.current) {
+          ackAudioRef.current.onended = playResponse
+          ackAudioRef.current.onerror = playResponse
         } else {
           playResponse()
         }
@@ -221,13 +267,14 @@ export function useVoice({ onMessage, onOrbState }) {
       }
     } catch (err) {
       console.error('[useVoice] backend error:', err)
+      onError?.()
       setStatus(VOICE_STATUS.ERROR)
       onOrbState('idle')
       setTimeout(() => {
         setStatus(wakeModeRef.current ? VOICE_STATUS.WAKE_LISTEN : VOICE_STATUS.IDLE)
       }, 2500)
     }
-  }, [onMessage, onOrbState])
+  }, [onMessage, onMessageChunk, onError, onOrbState])
 
   // ── Record command after wake word ────────────────────────────────
   const startRecording = useCallback(() => {

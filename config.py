@@ -23,7 +23,12 @@ OPENCLAW_PORT:  int = int(os.getenv("OPENCLAW_PORT", "18789"))
 OPENCLAW_TOKEN: str = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 
 # ── Model roster ─────────────────────────────────────────
-MODEL_MAIN     = "qwen2.5:14b"
+# MODEL_MAIN was qwen2.5:14b — switched to the 7b model (already installed,
+# see MODEL_REASON) as the everyday-chat default: modern 7B models hold up
+# well for regular conversation and the smaller size is noticeably faster
+# on non-flagship hardware. The 14b model is still installed and reachable
+# via MODEL_FLAGSHIP/the Experimental settings toggle if ever wanted again.
+MODEL_MAIN     = "qwen2.5:7b"
 MODEL_FAST     = "llama3.2:3b"
 MODEL_CODER    = "deepseek-coder:6.7b"
 MODEL_REASON   = "qwen2.5:7b"

@@ -56,15 +56,16 @@ function Message({ msg }) {
           maxWidth: '72%',
           padding: '10px 14px',
           ...GLASS_MSG,
-          borderLeft: isNyx ? '2px solid #a78bfa' : 'none',
+          borderLeft: isNyx ? `2px solid ${msg.proactive ? '#e879f9' : '#a78bfa'}` : 'none',
           borderRight: isNyx ? 'none' : '2px solid #6d28d9',
           background: isNyx ? 'rgba(11,11,26,0.75)' : 'rgba(76,29,149,0.15)',
+          boxShadow: msg.proactive ? '0 0 16px rgba(232,121,249,0.15)' : 'none',
           // Let the user select + copy message text (WebView defaults to off)
           userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text',
         }}
       >
-        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: isNyx ? '#a78bfa' : '#6d28d9', letterSpacing: '0.12em', marginBottom: 5, userSelect: 'none' }}>
-          {isNyx ? 'NYX' : 'YOU'}
+        <div style={{ fontFamily: 'Share Tech Mono', fontSize: 9, color: isNyx ? (msg.proactive ? '#e879f9' : '#a78bfa') : '#6d28d9', letterSpacing: '0.12em', marginBottom: 5, userSelect: 'none' }}>
+          {isNyx ? (msg.proactive ? `± ${(msg.category || 'NYX').toUpperCase()}` : 'NYX') : 'YOU'}
           {msg.model && <span style={{ color: '#4a4680', marginLeft: 8 }}>{msg.model}</span>}
         </div>
         <div style={{ fontSize: 13, color: '#e2e0ff', lineHeight: 1.6, fontFamily: 'Exo 2, sans-serif',
@@ -89,9 +90,37 @@ export default function ChatOverlay({ visible, onOrbStateChange, onVoiceStatus, 
   const addVoiceMessage = (msg) =>
     setMessages(prev => [...prev, { id: Date.now() + Math.random(), ...msg }])
 
+  // Nyx speaking up unprompted (a reminder fired, a book finished
+  // narrating, etc.) — not a reply to anything the user sent, so it's
+  // tagged distinctly for the Message component to render differently.
+  const addProactiveMessage = (evt) =>
+    setMessages(prev => [...prev, {
+      id: Date.now() + Math.random(), role: 'nyx', text: evt.message,
+      proactive: true, category: evt.category,
+    }])
+
+  // Streaming reply: patches ONE message in place by id as text arrives,
+  // instead of appending a whole new message each time — a normal chat
+  // bubble growing word by word. Also doubles as the "Nyx has started
+  // responding" signal, replacing the old fixed-timeout guess for clearing
+  // the typing indicator.
+  const streamVoiceMessage = (id, textSoFar) => {
+    setThinking(false)
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === id)
+      if (idx === -1) return [...prev, { id, role: 'nyx', text: textSoFar }]
+      const next = [...prev]
+      next[idx] = { ...next[idx], text: textSoFar }
+      return next
+    })
+  }
+
   const { status: voiceStatus, wakeMode, textOnly, setTextOnly, listenOnce, toggleWakeMode, stopAll, sendText } = useVoice({
-    onMessage:  addVoiceMessage,
-    onOrbState: onOrbStateChange,
+    onMessage:      addVoiceMessage,
+    onMessageChunk: streamVoiceMessage,
+    onError:        () => setThinking(false),
+    onOrbState:     onOrbStateChange,
+    onProactive:    addProactiveMessage,
   })
 
   // Propagate voice status up to App.jsx
@@ -120,8 +149,8 @@ export default function ChatOverlay({ visible, onOrbStateChange, onVoiceStatus, 
     setInput('')
     setThinking(true)
     sendText(text)
-    // voice hook manages message display, orb state, and audio — reset thinking on status change
-    setTimeout(() => setThinking(false), 500)
+    // thinking clears for real now — via streamVoiceMessage on the first
+    // streamed chunk, or via onError on failure — not a fixed-delay guess.
   }
 
   const handleReset = async () => {

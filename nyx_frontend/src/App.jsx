@@ -20,12 +20,16 @@ import TasksPage            from './components/TasksPage.jsx'
 import UpdatesPage          from './components/UpdatesPage.jsx'
 import ModelManagerPage     from './components/ModelManagerPage.jsx'
 import MusicPage            from './components/MusicPage.jsx'
+import AudiobooksPage       from './components/AudiobooksPage.jsx'
 import PluginsPage         from './components/PluginsPage.jsx'
 import AgentsPage          from './components/AgentsPage.jsx'
 import CommandPalette      from './components/CommandPalette.jsx'
 // Side effect: boots the persistent music engine + its voice-command WS
 // listener, so "play X" works even before the Music page is opened.
 import './utils/musicPlayer.js'
+// Same reasoning for audiobooks: boots position-save + progress-broadcast
+// handling before the Audiobooks page is ever opened.
+import './utils/audiobookPlayer.js'
 import { useTheme, NYX_PURPLE_FREEZE } from './utils/themeContext.jsx'
 import { PAGE_PATHS } from './utils/constants.js'
 import { getPlugins } from './services/api.js'
@@ -313,6 +317,8 @@ export default function App() {
                     <PluginsPage />
                   ) : activePage === 'music' ? (
                     <MusicPage />
+                  ) : activePage === 'audiobooks' ? (
+                    <AudiobooksPage />
                   ) : activePage === 'agents' ? (
                     <AgentsPage onNavigate={handleNav} />
                   ) : (
@@ -422,7 +428,7 @@ export default function App() {
           left:    orbL,
           top:     orbT,
           scale:   orbScale,
-          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates','models','music','plugins','agents'].includes(activePage)) ? 0 : 1),
+          opacity: idleScreen ? 0 : ((['memory','network','globalview','settings','systems','tasks','updates','models','music','audiobooks','plugins','agents'].includes(activePage)) ? 0 : 1),
         }}
         transition={{
           type: 'spring',

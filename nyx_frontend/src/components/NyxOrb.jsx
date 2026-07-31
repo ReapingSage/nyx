@@ -77,13 +77,16 @@ export default function NyxOrb({ size = 560, state = 'idle', chatMode = false, o
                 : s === 'speaking'  ? 1.7
                 : s === 'listening' ? 1.3
                 : s === 'error'     ? 0.55
+                : s === 'alert'     ? 1.6
                 : hoverRef.current  ? 1.2 : 1.0
       const bm  = s === 'thinking'  ? 1.5
                 : s === 'speaking'  ? 1.3
                 : s === 'listening' ? 1.1
                 : s === 'error'     ? 1.4
+                : s === 'alert'     ? 1.35
                 : hoverRef.current  ? 1.1 : 1.0
       const isError = s === 'error'
+      const isAlert = s === 'alert'
 
       timeRef.current += 0.016 * sm
 
@@ -325,6 +328,26 @@ export default function NyxOrb({ size = 560, state = 'idle', chatMode = false, o
         ctx.shadowBlur  = 10
         ctx.lineWidth   = 0.7
         ctx.beginPath(); ctx.arc(cx, cy, baseR * (0.97 - Math.abs(ef2) * 0.04), 0, 6.28); ctx.stroke()
+      }
+
+      // ── ALERT: magenta pulse corona — Nyx has something to tell you
+      // unprompted (proactive notification). Same shape as the error
+      // corona above, distinct color so it never reads as an error.
+      if (isAlert) {
+        const af = Math.abs(Math.sin(t * 3.2))
+        const ag = ctx.createRadialGradient(cx, cy, baseR * 0.5, cx, cy, baseR * 1.45)
+        ag.addColorStop(0,    'rgba(232,121,249,0)')
+        ag.addColorStop(0.45, `rgba(232,121,249,${0.10 + af * 0.16})`)
+        ag.addColorStop(1,    'rgba(180,60,220,0)')
+        ctx.fillStyle = ag; ctx.globalAlpha = 1
+        ctx.beginPath(); ctx.arc(cx, cy, baseR * 1.45, 0, 6.28); ctx.fill()
+
+        ctx.strokeStyle = `rgba(232,121,249,${0.35 + af * 0.4})`
+        ctx.shadowColor = '#E879F9'
+        ctx.shadowBlur  = 20 + af * 20
+        ctx.lineWidth   = 1.2 + af * 1.3
+        ctx.globalAlpha = 1
+        ctx.beginPath(); ctx.arc(cx, cy, baseR * (1.02 + af * 0.05), 0, 6.28); ctx.stroke()
       }
 
       // Thinking beam

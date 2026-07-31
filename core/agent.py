@@ -4,6 +4,8 @@ Maintains full conversation history for the session so Nyx
 remembers everything said since startup.
 """
 
+import threading
+
 from brain import model_router, ollama_provider, openclaw_provider
 from core import memory_manager, permissions, vault_bridge
 import config
@@ -62,7 +64,7 @@ class NyxAgent:
         if len(convo) > self.MAX_CONVO_MESSAGES:
             self.history = system + convo[-self.MAX_CONVO_MESSAGES:]
 
-    def handle(self, user_input: str) -> str:
+    def handle(self, user_input: str, on_chunk=None) -> str:
         """
         Process a user message with full conversation context.
 
@@ -74,6 +76,13 @@ class NyxAgent:
           5. Add Nyx's reply to history
           6. Save exchange to disk
           7. Return response
+
+        on_chunk, if given, is called with each incremental piece of text as
+        it arrives from the LLM (for the real generation calls only — the
+        many tool/keyword shortcuts above already return instantly, so
+        there's nothing to stream there; a caller that needs a guaranteed
+        "at least one chunk" event for those fast paths handles that itself
+        after this returns, since it already knows whether on_chunk fired).
         """
         stripped = user_input.strip()
         if not stripped:
@@ -205,7 +214,10 @@ class NyxAgent:
                     {"role": "user",   "content": stripped},
                 ]
                 model, _ = model_router.route(stripped)
-                response = ollama_provider.ask(model=model, messages=augmented)
+                if on_chunk:
+                    response = ollama_provider.ask_streaming(model=model, messages=augmented, on_chunk=on_chunk)
+                else:
+                    response = ollama_provider.ask(model=model, messages=augmented)
             elif explicit:
                 response = f"[Nyx] No results found for '{query}'. Try rephrasing."
             else:
@@ -239,6 +251,8 @@ class NyxAgent:
                 response, _ = openclaw_provider.dispatch(stripped)
                 if not response:
                     response = "[Nyx] OpenClaw returned no response."
+        elif on_chunk:
+            response = ollama_provider.ask_streaming(model=model, messages=self.history, on_chunk=on_chunk)
         else:
             response = ollama_provider.ask(model=model, messages=self.history)
 
@@ -250,11 +264,20 @@ class NyxAgent:
         memory_manager.save_exchange(user_input=stripped, response=response, model=model)
 
         # ── Extract memories from user input ──────────────
-        try:
-            from core.memory_extractor import extract_and_save
-            extract_and_save(stripped, source="chat")
-        except Exception as e:
-            log.debug(f"[agent] Memory extraction non-fatal: {e}")
+        # Runs in the background, off the return path: it's bookkeeping for
+        # later conversations, not part of the answer the user is waiting
+        # on, so it shouldn't add its own embedding-call latency to every
+        # single reply. handle() itself already runs in a worker thread
+        # (see ui/server.py's run_in_executor callers), so this is a plain
+        # daemon thread, not asyncio — no event loop to hand off to here.
+        def _extract_memories_bg():
+            try:
+                from core.memory_extractor import extract_and_save
+                extract_and_save(stripped, source="chat")
+            except Exception as e:
+                log.debug(f"[agent] Memory extraction non-fatal: {e}")
+
+        threading.Thread(target=_extract_memories_bg, daemon=True).start()
 
         return response
 

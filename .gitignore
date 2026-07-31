@@ -61,3 +61,11 @@ memory/music_library.json
 memory/plugins.json
 memory/agents.json
 music/banners/
+
+# Audiobooks library — personal audio/books + index, never for the repo
+audiobooks/library/
+audiobooks/covers/
+audiobooks/sources/
+memory/audiobook_library.json
+# Kokoro model weights (~120MB) — downloaded on first use, never for the repo
+audiobooks/models/

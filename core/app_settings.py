@@ -31,6 +31,18 @@ DEFAULTS = {
         "task_complete": True,
         "errors": True,
         "voice_wake": False,
+        # Proactive notifications (core/proactive.py) — Nyx telling you
+        # something unprompted, as opposed to the categories above which
+        # gate the plain OS toast only.
+        "speak_proactive": True,
+        "proactive_reminders": True,
+        "proactive_timers": True,
+        "proactive_tasks": True,
+        "proactive_audiobooks": True,
+        "proactive_system_health": True,
+        # "HH:MM" 24h strings, e.g. "22:00"/"08:00". Empty = no quiet hours.
+        "quiet_hours_start": "",
+        "quiet_hours_end": "",
     },
     "privacy": {
         "block_dangerous_actions": False,  # False = warn only, True = hard block
